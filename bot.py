@@ -207,7 +207,7 @@ USER_COLS = (
     "balance_img","balance_aud","balance_vid","balance_tts","balance_stt",
     "balance_edit","balance_anim","balance_up","text_free_used","referrals","referrer_id","q_bought","reward_claimed",
     "sub_plan","sub_until","sub_used","sub_auto","sub_id","last_bonus","sub_notified",
-    "onboarded","state","temp_model_id","temp_price","admin_state","admin_target","admin_ts",
+    "onboarded","state","temp_model_id","temp_price","admin_state","admin_target","admin_ts","last_seen",
 )
 
 _BALANCE_COLS = frozenset(BAL_FIELD.values())
@@ -513,7 +513,7 @@ def cleanup_old_data():
         cur = c.cursor()
         for tbl, cutoff in (("works", now - WORKS_RETENTION_DAYS * 86400), ("rate", now - 7200), ("logs", now - WORKS_RETENTION_DAYS * 86400)):
             while not SHUTDOWN.is_set():
-                cur.execute(f"DELETE FROM {tbl} WHERE id IN (SELECT id FROM {tbl} WHERE ts < ? LIMIT {CLEANUP_BATCH})", (cutoff,))
+                cur.execute(f"DELETE FROM {tbl} WHERE rowid IN (SELECT rowid FROM {tbl} WHERE ts < ? LIMIT {CLEANUP_BATCH})", (cutoff,))
                 if cur.rowcount < CLEANUP_BATCH: break
 
 def start_cleanup_worker():
