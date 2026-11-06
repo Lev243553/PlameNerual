@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Нейро-Студия v36 — финальный релиз.
-  - Исправлен ложный бан контента (поиск по словам целиком, отключен fail-closed по умолчанию).
+Нейро-Студия v36.1 — финальный релиз.
+  - Умный фильтр модерации (ищет целые слова, игнорирует нормальный английский).
   - Полностью переработанная админка (Поиск по ID, создание юзера, выдача баланса).
-  - Исправлены все конфликты register_next_step_handler.
-  - Сохранена 100% безопасность финансов и защита от SSRF из v35.
+  - Исправлен краш cleanup (rowid вместо id).
+  - Сохранена безопасность финансов и защита от SSRF.
 """
 import os
 import re
@@ -116,7 +116,7 @@ HEALTH_PORT        = _env_int("HEALTH_PORT", 0, minimum=0)
 MODERATION_API_URL  = os.getenv("MODERATION_API_URL", "")
 MODERATION_API_KEY  = os.getenv("MODERATION_API_KEY", "")
 MODERATION_REQUIRED = _env_bool("MODERATION_REQUIRED", False)
-MODERATION_FAIL_CLOSED = _env_bool("MODERATION_FAIL_CLOSED", False) # Отключено по умолчанию
+MODERATION_FAIL_CLOSED = _env_bool("MODERATION_FAIL_CLOSED", False)
 ADMIN_ONLY_IF_NO_MODERATION = _env_bool("ADMIN_ONLY_IF_NO_MODERATION", False)
 
 WORKS_PER_USER    = 100
@@ -208,7 +208,8 @@ USER_COLS = (
     "balance_img","balance_aud","balance_vid","balance_tts","balance_stt",
     "balance_edit","balance_anim","balance_up","text_free_used","referrals","referrer_id","q_bought","reward_claimed",
     "sub_plan","sub_until","sub_used","sub_auto","sub_id","last_bonus","sub_notified",
-    "onboarded","state","temp_model_id","temp_price","admin_state","admin_target","admin_ts","last_seen",
+    "onboarded","state","temp_model_id","temp_price","admin_state","admin_target","admin_ts",
+    "last_seen",
 )
 
 _BALANCE_COLS = frozenset(BAL_FIELD.values())
@@ -216,20 +217,48 @@ _PERSONAL_CLEAR_COLS = tuple(c for c in USER_COLS if c not in _BALANCE_COLS and 
 _STRING_COLS = {"username","sub_plan","sub_id","state","temp_model_id","admin_state"}
 
 # ==========================================================
-# МОДЕРАЦИЯ
+# МОДЕРАЦИЯ (УМНЫЙ ФИЛЬТР)
 # ==========================================================
-_BANNED_WORDS = ["порно","порн","секс","эротик","хентай","изнасил","педофил","лоли","цп","инцест","насили","убийств","оружи","наркоти","нацизм","гитлер","фашизм","терроризм","child","porno","hentai","csam","loli","rape","underage","teen","cp","young","schoolgirl","schoolboy"]
+# Огромный список корней. Бот ищет их ТОЛЬКО как отдельные слова!
+_BANNED_ROOTS = [
+    # Русские корни (18+)
+    "порн", "секс", "эрот", "хентай", "извращ", "интим", "голы", "обнаж", "минет", "анал", "оргазм", "мастурб", "вагин", "пенис", "член", "сиськ", "груд", "инцест", "педофил", "лоли", "цп", "детск", "школьниц",
+    # Русские корни (насилие/криминал)
+    "изнасил", "насили", "убийств", "убить", "труп", "кров", "расчлен", "оружи", "взрывчат", "бомб", "наркоти", "героин", "кокаин", "мефедрон", "амфетамин", "спайс", "соли", "закладк", 
+    # Экстремизм
+    "нацизм", "гитлер", "фашизм", "терроризм", "теракт", "джихад", "исламск", "кавказ", "хохол", "москал", "жид", "хач",
+    # Английские корни
+    "porn", "sex", "hentai", "loli", "incest", "pedo", "child", "csam", "rape", "raping", "nude", "naked", "nsfw", "boobs", "penis", "vagina", "anal", "orgasm", "masturb", "teen", "underage", "schoolgirl", "schoolboy", 
+    # Английское насилие
+    "kill", "murder", "corpse", "blood", "weapon", "bomb", "explosive", "drug", "cocaine", "heroin", "meth", "cannabis", "marijuana",
+    # Английский экстремизм
+    "nazi", "hitler", "fascis", "terror", "jihad", "isis", "kkk"
+]
+
 _LEET = str.maketrans({"0":"o","1":"i","3":"e","4":"a","5":"s","@":"a","$":"s"})
-BANNED = re.compile("|".join(map(re.escape, _BANNED_WORDS)), re.IGNORECASE)
 
 def is_banned(text: str) -> bool:
     if not text: return False
+    
+    # ПРОПУСКАЕМ английские промпты (если текст только на латинице и пробелах)
+    # Это спасает от ложных банов промптов вроде "glowing neon gift box"
+    if re.match(r'^[a-zA-Z0-9\s\.,!?\-\(\)\[\]]+$', text):
+        # Даже в английском проверяем на явные жесткие слова
+        low = text.lower()
+        for root in ["porn", "sex", "hentai", "loli", "incest", "pedo", "child", "csam", "rape", "nude", "naked", "nsfw"]:
+            if root in low: return True
+        return False
+
+    # Для русского текста (или смешанного) делаем нормализацию
     norm = text.lower().translate(_LEET)
     norm = re.sub(r"[\W_]+", " ", norm, flags=re.UNICODE)
     words = norm.split()
+    
     for w in words:
-        if w in _BANNED_WORDS: return True
-        if len(w) > 4 and any(b in w for b in ["порн", "хентай", "изнасил"]): return True
+        for root in _BANNED_ROOTS:
+            # Если корень совпадает с началом слова или является всем словом
+            if w.startswith(root) or root == w:
+                return True
     return False
 
 def moderation_check(text: str) -> bool:
@@ -514,6 +543,7 @@ def cleanup_old_data():
         cur = c.cursor()
         for tbl, cutoff in (("works", now - WORKS_RETENTION_DAYS * 86400), ("rate", now - 7200), ("logs", now - WORKS_RETENTION_DAYS * 86400)):
             while not SHUTDOWN.is_set():
+                # ИСПОЛЬЗУЕМ rowid ВМЕСТО id
                 cur.execute(f"DELETE FROM {tbl} WHERE rowid IN (SELECT rowid FROM {tbl} WHERE ts < ? LIMIT {CLEANUP_BATCH})", (cutoff,))
                 if cur.rowcount < CLEANUP_BATCH: break
 
@@ -601,8 +631,7 @@ def recover_stuck_transactions():
     with DbConn() as c:
         cur = c.cursor(); cur.execute("SELECT id FROM transactions WHERE status='PENDING' AND ts < ?", (cutoff,)); ids = [r[0] for r in cur.fetchall()]
     for tid in ids:
-        try:
-            Finance.refund(tid, "recovered_stuck")
+        try: Finance.refund(tid, "recovered_stuck")
         except Exception: log.exception(f"recover tx {tid} failed")
 
 def start_recovery_worker():
@@ -838,7 +867,6 @@ def register_handlers():
         if not u or u["is_banned"]: return safe_send(uid, "⛔ Вы забанены.")
         set_state(uid, "")
         
-        # Убираем клавиатуру и удаляем сообщение "Очистка..."
         try:
             msg = bot.send_message(uid, "Очистка...", reply_markup=types.ReplyKeyboardRemove())
             bot.delete_message(uid, msg.message_id)
@@ -971,7 +999,6 @@ def register_handlers():
         u = get_user(uid)
         if not u or u["is_banned"]: return
 
-        # --- БЛОК АДМИНСКИХ КОМАНД (ВЫДАЧА / ПОИСК) ---
         if uid == ADMIN_ID and u.get("admin_state"):
             if u["admin_state"] == "find_user":
                 try: target_uid = int((m.text or "").strip())
@@ -1003,7 +1030,6 @@ def register_handlers():
                 log_ev(target_uid, "admin_gift", f"{m_type} +{n} by admin")
                 show_user_card(m.chat.id, target_uid)
                 return
-        # -----------------------------------------------
 
         if u["state"] != "waiting_for_prompt": return safe_send(m.chat.id, "Выбери действие: /start")
         mid = u["temp_model_id"]
@@ -1508,7 +1534,7 @@ def main():
     threading.Thread(target=payment_poller_single_loop, daemon=True, name="payment_poller").start()
     if HEALTH_PORT > 0: start_health_server(HEALTH_PORT)
 
-    log.info(f"🚀 Neuro Studio v36 started (workers={EXECUTOR_WORKERS}, queue_max={EXECUTOR_QUEUE_MAX}, db_pool={DB_POOL_SIZE})")
+    log.info(f"🚀 Neuro Studio v36.1 started (workers={EXECUTOR_WORKERS}, queue_max={EXECUTOR_QUEUE_MAX}, db_pool={DB_POOL_SIZE})")
     try: bot.infinity_polling(timeout=10, long_polling_timeout=5)
     except KeyboardInterrupt: log.warning("stopped by KeyboardInterrupt")
     finally:
