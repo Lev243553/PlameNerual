@@ -255,7 +255,7 @@ USER_COLS = (
     "text_free_used","referrals","referrer_id","q_bought","reward_claimed",
     "sub_plan","sub_until","sub_used","sub_auto","sub_id","last_bonus","sub_notified",
     "onboarded","state","temp_model_id","temp_price",
-    "admin_state","admin_target","admin_ts",
+    "admin_state","admin_target","admin_ts","last_seen",
 )
 
 _BALANCE_COLS = frozenset(BAL_FIELD.values())
