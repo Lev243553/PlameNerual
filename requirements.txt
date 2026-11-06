@@ -1,5 +1,10 @@
-pyTelegramBotAPI
-mystars-faas
-python-dotenv
-pytoniq
-aiohttp
+# Core
+pyTelegramBotAPI==4.14.0
+requests==2.31.0
+python-dotenv==1.0.1
+
+# Transitive pins (чтобы не прилетело «внезапно»)
+certifi==2024.2.2
+charset-normalizer==3.3.2
+idna==3.7
+urllib3==2.2.1
