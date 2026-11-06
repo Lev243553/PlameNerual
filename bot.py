@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Нейро-Студия v36.1 — финальный релиз.
-  - Умный фильтр модерации (ищет целые слова, игнорирует нормальный английский).
-  - Полностью переработанная админка (Поиск по ID, создание юзера, выдача баланса).
-  - Исправлен краш cleanup (rowid вместо id).
-  - Сохранена безопасность финансов и защита от SSRF.
+Нейро-Студия v37 — WORKING RELEASE.
+  - УДАЛЕН тупой текстовый фильтр. Английские промпты проходят без блокировок.
+  - Возвращены ВСЕ модели (Gemini Lite, Seedream 5, Qwen 2 и т.д.).
+  - Исправлен краш cleanup.
+  - Админка с поиском по ID.
 """
 import os
 import re
@@ -121,7 +121,6 @@ ADMIN_ONLY_IF_NO_MODERATION = _env_bool("ADMIN_ONLY_IF_NO_MODERATION", False)
 
 WORKS_PER_USER    = 100
 TG_MSG_CHUNK      = 4000
-MODERATION_MAX_LEN = 2000
 STT_PREVIEW_LEN   = 3500
 ADMIN_PAGE        = 15
 DNS_CACHE_TTL     = 60
@@ -156,29 +155,45 @@ _EXPECTED_CT = {
 }
 
 MODELS = {
-    "openai/gpt-image-1.5": {"name":"GPT Image 1.5", "type":"image", "price":7, "cost":3.0, "active":1},
-    "openai/gpt-5-image": {"name":"GPT-5 Image", "type":"image", "price":10, "cost":4.5, "active":1},
-    "google/gemini-2.5-flash-image": {"name":"Gemini 2.5 Flash", "type":"image", "price":6, "cost":2.9, "active":1},
-    "google/gemini-nano-banana-2.1": {"name":"Nano Banana 2.1", "type":"image", "price":7, "cost":3.0, "active":1},
-    "black-forest-labs/flux.2-flex": {"name":"Flux 2 Flex", "type":"image", "price":22, "cost":14.0, "active":1},
-    "bytedance/seedream-4": {"name":"Seedream 4", "type":"image", "price":7, "cost":3.0, "active":1},
-    "qwen/image": {"name":"Qwen Image", "type":"image", "price":5, "cost":2.25, "active":1},
-    "yandex/yandex-art": {"name":"Yandex Art", "type":"image", "price":6, "cost":2.91, "active":1},
-    "grok-imagine-image-2-0/text-to-image": {"name":"Grok Image 2.0", "type":"image", "price":8, "cost":3.0, "active":1},
-    "google/lyria-3-pro-preview": {"name":"Lyria 3 Pro", "type":"audio", "price":20, "cost":10.0, "active":1},
-    "suno/sounds": {"name":"Suno Sounds", "type":"audio", "price":8, "cost":4.0, "active":1},
-    "grok-imagine-video-1-5": {"name":"Grok Imagine Video", "type":"video", "price":5, "cost":2.0, "active":1},
-    "bytedance/seedance-2-mini": {"name":"Seedance 2 Mini", "type":"video", "price":7, "cost":3.0, "active":1},
-    "google/gemini-3.1-flash-tts-preview": {"name":"Gemini 3.1 TTS", "type":"tts", "price":30, "cost":14.0, "active":1},
-    "openai/whisper-1": {"name":"Whisper 1", "type":"stt", "price":5, "cost":0.43, "active":1},
-    "openai/gpt-4o-transcribe": {"name":"GPT-4o Transcribe", "type":"stt", "price":5, "cost":0.70, "active":1},
-    "bytedance/seedream-4.5": {"name":"Seedream 4.5 Edit", "type":"edit", "price":8, "cost":4.0, "active":1},
-    "bytedance/seedance-2": {"name":"Seedance 2 (Оживл.)", "type":"animate", "price":15, "cost":7.0, "active":1},
-    "kling/v2.6-motion-control": {"name":"Kling Motion", "type":"animate", "price":20, "cost":10.0, "active":1},
-    "topaz/video-upscale": {"name":"Topaz Video Upscale", "type":"upscale", "price":12, "cost":6.0, "active":1},
-    "topaz/image-upscale": {"name":"Topaz Image Upscale", "type":"upscale", "price":5, "cost":2.0, "active":1},
+    "openai/gpt-image-1.5":               {"name":"GPT Image 1.5",       "type":"image",  "price":7,  "cost":3.0,  "active":1},
+    "openai/gpt-5-image":                 {"name":"GPT-5 Image",         "type":"image",  "price":10, "cost":4.5,  "active":1},
+    "google/gemini-2.5-flash-image":      {"name":"Gemini 2.5 Flash",    "type":"image",  "price":6,  "cost":2.9,  "active":1},
+    "google/gemini-nano-banana-2.1":      {"name":"Nano Banana 2.1",     "type":"image",  "price":7,  "cost":3.0,  "active":1},
+    "google/gemini-3.1-flash-lite-image": {"name":"Gemini 3.1 Lite",     "type":"image",  "price":6,  "cost":2.9,  "active":1},
+    "black-forest-labs/flux.2-flex":      {"name":"Flux 2 Flex",         "type":"image",  "price":22, "cost":14.0, "active":1},
+    "bytedance/seedream-4":               {"name":"Seedream 4",          "type":"image",  "price":7,  "cost":3.0,  "active":1},
+    "bytedance/seedream-5-lite":          {"name":"Seedream 5 Lite",     "type":"image",  "price":8,  "cost":4.0,  "active":1},
+    "qwen/image":                         {"name":"Qwen Image",          "type":"image",  "price":5,  "cost":2.25, "active":1},
+    "qwen/image-2":                       {"name":"Qwen Image 2",        "type":"image",  "price":8,  "cost":4.0,  "active":1},
+    "qwen/image-2.1":                     {"name":"Qwen Image 2.1",      "type":"image",  "price":7,  "cost":3.0,  "active":1},
+    "tongyi-mai/z-image":                 {"name":"Z-Image",             "type":"image",  "price":5,  "cost":1.4,  "active":1},
+    "yandex/yandex-art":                  {"name":"Yandex Art",          "type":"image",  "price":6,  "cost":2.91, "active":1},
+    "grok-imagine-image-2-0/text-to-image":{"name":"Grok Image 2.0",     "type":"image",  "price":8,  "cost":3.0,  "active":1},
+    "x-ai/grok-image":                    {"name":"Grok Image",          "type":"image",  "price":6,  "cost":2.5,  "active":1},
+    
+    "google/lyria-3-pro-preview":         {"name":"Lyria 3 Pro",         "type":"audio",  "price":20, "cost":10.0, "active":1},
+    "google/lyria-3-clip-preview":        {"name":"Lyria 3 Clip",        "type":"audio",  "price":12, "cost":6.0,  "active":1},
+    "suno/sounds":                        {"name":"Suno Sounds",         "type":"audio",  "price":8,  "cost":4.0,  "active":1},
+    
+    "grok-imagine-video-1-5":             {"name":"Grok Imagine Video",  "type":"video",  "price":5,  "cost":2.0,  "active":1},
+    "bytedance/seedance-2-mini":          {"name":"Seedance 2 Mini",     "type":"video",  "price":7,  "cost":3.0,  "active":1},
+    
+    "google/gemini-3.1-flash-tts-preview":{"name":"Gemini 3.1 TTS",      "type":"tts",    "price":30, "cost":14.0, "active":1},
+    "google/gemini-3.8-flash-lite-tts":   {"name":"Gemini 3.8 TTS",      "type":"tts",    "price":15, "cost":7.0,  "active":1},
+    
+    "openai/whisper-1":                   {"name":"Whisper 1",           "type":"stt",    "price":5,  "cost":0.43, "active":1},
+    "openai/gpt-4o-transcribe":           {"name":"GPT-4o Transcribe",   "type":"stt",    "price":5,  "cost":0.70, "active":1},
+    
+    "bytedance/seedream-4.5":             {"name":"Seedream 4.5 Edit",   "type":"edit",   "price":8,  "cost":4.0,  "active":1},
+    
+    "bytedance/seedance-2":               {"name":"Seedance 2 (Оживл.)", "type":"animate","price":15, "cost":7.0,  "active":1},
+    "kling/v2.6-motion-control":          {"name":"Kling Motion",        "type":"animate","price":20, "cost":10.0, "active":1},
+    
+    "topaz/video-upscale":                {"name":"Topaz Video Upscale", "type":"upscale","price":12, "cost":6.0,  "active":1},
+    "topaz/image-upscale":                {"name":"Topaz Image Upscale", "type":"upscale","price":5,  "cost":2.0,  "active":1},
+    
     "nvidia/nemotron-3-ultra-550b-a55b:free": {"name":"Nemotron 3 Ultra", "type":"text", "price":0, "cost":0.0, "active":1, "provider":"openrouter"},
-    "google/gemma-4-31b-it:free": {"name":"Gemma 4 31B", "type":"text", "price":0, "cost":0.0, "active":1, "provider":"openrouter"},
+    "google/gemma-4-31b-it:free":         {"name":"Gemma 4 31B",        "type":"text",   "price":0, "cost":0.0, "active":1, "provider":"openrouter"},
 }
 
 PACKAGES = {
@@ -217,64 +232,22 @@ _PERSONAL_CLEAR_COLS = tuple(c for c in USER_COLS if c not in _BALANCE_COLS and 
 _STRING_COLS = {"username","sub_plan","sub_id","state","temp_model_id","admin_state"}
 
 # ==========================================================
-# МОДЕРАЦИЯ (УМНЫЙ ФИЛЬТР)
+# МОДЕРАЦИЯ (ОТКЛЮЧЕНА)
 # ==========================================================
-# Огромный список корней. Бот ищет их ТОЛЬКО как отдельные слова!
-_BANNED_ROOTS = [
-    # Русские корни (18+)
-    "порн", "секс", "эрот", "хентай", "извращ", "интим", "голы", "обнаж", "минет", "анал", "оргазм", "мастурб", "вагин", "пенис", "член", "сиськ", "груд", "инцест", "педофил", "лоли", "цп", "детск", "школьниц",
-    # Русские корни (насилие/криминал)
-    "изнасил", "насили", "убийств", "убить", "труп", "кров", "расчлен", "оружи", "взрывчат", "бомб", "наркоти", "героин", "кокаин", "мефедрон", "амфетамин", "спайс", "соли", "закладк", 
-    # Экстремизм
-    "нацизм", "гитлер", "фашизм", "терроризм", "теракт", "джихад", "исламск", "кавказ", "хохол", "москал", "жид", "хач",
-    # Английские корни
-    "porn", "sex", "hentai", "loli", "incest", "pedo", "child", "csam", "rape", "raping", "nude", "naked", "nsfw", "boobs", "penis", "vagina", "anal", "orgasm", "masturb", "teen", "underage", "schoolgirl", "schoolboy", 
-    # Английское насилие
-    "kill", "murder", "corpse", "blood", "weapon", "bomb", "explosive", "drug", "cocaine", "heroin", "meth", "cannabis", "marijuana",
-    # Английский экстремизм
-    "nazi", "hitler", "fascis", "terror", "jihad", "isis", "kkk"
-]
-
-_LEET = str.maketrans({"0":"o","1":"i","3":"e","4":"a","5":"s","@":"a","$":"s"})
-
-def is_banned(text: str) -> bool:
-    if not text: return False
-    
-    # ПРОПУСКАЕМ английские промпты (если текст только на латинице и пробелах)
-    # Это спасает от ложных банов промптов вроде "glowing neon gift box"
-    if re.match(r'^[a-zA-Z0-9\s\.,!?\-\(\)\[\]]+$', text):
-        # Даже в английском проверяем на явные жесткие слова
-        low = text.lower()
-        for root in ["porn", "sex", "hentai", "loli", "incest", "pedo", "child", "csam", "rape", "nude", "naked", "nsfw"]:
-            if root in low: return True
-        return False
-
-    # Для русского текста (или смешанного) делаем нормализацию
-    norm = text.lower().translate(_LEET)
-    norm = re.sub(r"[\W_]+", " ", norm, flags=re.UNICODE)
-    words = norm.split()
-    
-    for w in words:
-        for root in _BANNED_ROOTS:
-            # Если корень совпадает с началом слова или является всем словом
-            if w.startswith(root) or root == w:
-                return True
-    return False
-
 def moderation_check(text: str) -> bool:
-    if not text: return True
-    if is_banned(text): return False
-    if not MODERATION_API_URL:
-        if MODERATION_REQUIRED: return False
-        if MODERATION_FAIL_CLOSED: return False
-        return True
-    headers = {"Content-Type": "application/json"}
-    if MODERATION_API_KEY: headers["Authorization"] = f"Bearer {MODERATION_API_KEY}"
-    try:
-        r = requests.post(MODERATION_API_URL, json={"input": text[:MODERATION_MAX_LEN]}, headers=headers, timeout=HTTP_TIMEOUT_SHORT)
-        if r.status_code != 200: return False
-        return bool(r.json().get("allowed", False))
-    except Exception: return False
+    # Внешняя модерация, если настроена
+    if MODERATION_API_URL:
+        headers = {"Content-Type": "application/json"}
+        if MODERATION_API_KEY: headers["Authorization"] = f"Bearer {MODERATION_API_KEY}"
+        try:
+            r = requests.post(MODERATION_API_URL, json={"input": text[:2000]}, headers=headers, timeout=HTTP_TIMEOUT_SHORT)
+            if r.status_code == 200: return bool(r.json().get("allowed", True))
+        except Exception: pass
+    
+    if MODERATION_REQUIRED: return False
+    if MODERATION_FAIL_CLOSED: return False
+    
+    return True # ПРОПУСКАЕМ ВСЁ ОСТАЛЬНОЕ
 
 # ==========================================================
 # СЕТЬ / SSRF
@@ -433,7 +406,7 @@ def init_db():
         cur.execute('''CREATE TABLE IF NOT EXISTS outbox(id INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER NOT NULL, text TEXT NOT NULL, kwargs TEXT NOT NULL DEFAULT '{}', ts REAL NOT NULL, sent_at REAL NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0)''')
         
         for mid, m in MODELS.items(): cur.execute("INSERT OR IGNORE INTO models VALUES(?,?,?,?)", (mid, m["active"], m["price"], m["cost"]))
-        for k, v in {"payments_on":"1","generations_on":"1","schema_version":"36"}.items(): cur.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
+        for k, v in {"payments_on":"1","generations_on":"1","schema_version":"37"}.items(): cur.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
 
 def get_user(uid: int) -> Optional[dict]:
     with DbConn() as c:
@@ -543,7 +516,6 @@ def cleanup_old_data():
         cur = c.cursor()
         for tbl, cutoff in (("works", now - WORKS_RETENTION_DAYS * 86400), ("rate", now - 7200), ("logs", now - WORKS_RETENTION_DAYS * 86400)):
             while not SHUTDOWN.is_set():
-                # ИСПОЛЬЗУЕМ rowid ВМЕСТО id
                 cur.execute(f"DELETE FROM {tbl} WHERE rowid IN (SELECT rowid FROM {tbl} WHERE ts < ? LIMIT {CLEANUP_BATCH})", (cutoff,))
                 if cur.rowcount < CLEANUP_BATCH: break
 
@@ -787,7 +759,7 @@ def safe_edit(uid: int, msg_id: int, text: str, **kwargs):
         except Exception: return
 
 # ==========================================================
-# OUTBOX (УВЕДОМЛЕНИЯ)
+# OUTBOX
 # ==========================================================
 def notify(uid: int, text: str, **kwargs):
     with DbConn() as c:
@@ -1534,7 +1506,7 @@ def main():
     threading.Thread(target=payment_poller_single_loop, daemon=True, name="payment_poller").start()
     if HEALTH_PORT > 0: start_health_server(HEALTH_PORT)
 
-    log.info(f"🚀 Neuro Studio v36.1 started (workers={EXECUTOR_WORKERS}, queue_max={EXECUTOR_QUEUE_MAX}, db_pool={DB_POOL_SIZE})")
+    log.info(f"🚀 Neuro Studio v37 started (workers={EXECUTOR_WORKERS}, queue_max={EXECUTOR_QUEUE_MAX}, db_pool={DB_POOL_SIZE})")
     try: bot.infinity_polling(timeout=10, long_polling_timeout=5)
     except KeyboardInterrupt: log.warning("stopped by KeyboardInterrupt")
     finally:
