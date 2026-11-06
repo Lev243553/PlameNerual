@@ -235,19 +235,8 @@ _STRING_COLS = {"username","sub_plan","sub_id","state","temp_model_id","admin_st
 # МОДЕРАЦИЯ (ОТКЛЮЧЕНА)
 # ==========================================================
 def moderation_check(text: str) -> bool:
-    # Внешняя модерация, если настроена
-    if MODERATION_API_URL:
-        headers = {"Content-Type": "application/json"}
-        if MODERATION_API_KEY: headers["Authorization"] = f"Bearer {MODERATION_API_KEY}"
-        try:
-            r = requests.post(MODERATION_API_URL, json={"input": text[:2000]}, headers=headers, timeout=HTTP_TIMEOUT_SHORT)
-            if r.status_code == 200: return bool(r.json().get("allowed", True))
-        except Exception: pass
-    
-    if MODERATION_REQUIRED: return False
-    if MODERATION_FAIL_CLOSED: return False
-    
-    return True # ПРОПУСКАЕМ ВСЁ ОСТАЛЬНОЕ
+  return True
+
 
 # ==========================================================
 # СЕТЬ / SSRF
