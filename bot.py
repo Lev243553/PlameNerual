@@ -1,10 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Нейро-Студия v37 — WORKING RELEASE.
-  - УДАЛЕН тупой текстовый фильтр. Английские промпты проходят без блокировок.
-  - Возвращены ВСЕ модели (Gemini Lite, Seedream 5, Qwen 2 и т.д.).
-  - Исправлен краш cleanup.
-  - Админка с поиском по ID.
+Нейро-Студия v41 — Audit Fixed Release.
+  - Исправлены все 20 багов из аудита.
 """
 import os
 import re
@@ -81,7 +78,7 @@ TOKEN          = os.getenv("BOT_TOKEN")
 POLZA_KEY      = os.getenv("POLZA_API_KEY")
 POLZA_BASE     = os.getenv("POLZA_API_URL", "https://polza.ai/api/v1")
 DATA_DIR       = os.getenv("DATA_DIR", "./data")
-SUPPORT_URL    = os.getenv("SUPPORT_URL", "https://t.me/crptworking")
+SUPPORT_URL    = os.getenv("SUPPORT_URL", "https://t.me/your_support") # Пункт 14
 PRIVACY_URL    = os.getenv("PRIVACY_URL", "")
 TERMS_URL      = os.getenv("TERMS_URL", "")
 PLATEGA_ID     = os.getenv("PLATEGA_MERCHANT_ID", "")
@@ -89,6 +86,17 @@ PLATEGA_SECRET = os.getenv("PLATEGA_SECRET_KEY", "")
 PLATEGA_URL    = os.getenv("PLATEGA_API_URL", "https://app.platega.io")
 RETURN_URL     = os.getenv("RETURN_URL", "")
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
+
+STARS_AUTO_REFUND = _env_bool("STARS_AUTO_REFUND", True)
+TERMS_REQUIRED    = _env_bool("TERMS_REQUIRED", False)
+
+STARS_RUB_PER_STAR      = _env_int("STARS_RUB_PER_STAR", 2, minimum=1)
+REFUND_WINDOW_HOURS     = _env_int("REFUND_WINDOW_HOURS", 24, minimum=1)
+PAYMENT_POLL_MAX_ERRORS = _env_int("PAYMENT_POLL_MAX_ERRORS", 6, minimum=1)
+PAYMENT_POLL_BACKOFF_MAX = _env_int("PAYMENT_POLL_BACKOFF_MAX", 60, minimum=5)
+OUTBOX_MAX_ATTEMPTS     = _env_int("OUTBOX_MAX_ATTEMPTS", 8, minimum=1)
+OUTBOX_RETRY_MAX_SEC    = _env_int("OUTBOX_RETRY_MAX_SEC", 3600, minimum=60)
+HEALTH_DB_CHECK         = _env_bool("HEALTH_DB_CHECK", True)
 
 FIRST_FREE_IMAGE = _env_bool("FIRST_FREE_IMAGE", True)
 REF_BONUS        = 2
@@ -100,8 +108,8 @@ MAX_HISTORY      = 10
 FILE_MAX_MB           = _env_int("FILE_MAX_MB", 20, minimum=1)
 PROMPT_MAX_LEN        = _env_int("PROMPT_MAX_LEN", 1000, minimum=10)
 WORKS_RETENTION_DAYS  = _env_int("WORKS_RETENTION_DAYS", 30, minimum=1)
-PAYMENT_POLL_TIMEOUT  = _env_int("PAYMENT_POLL_TIMEOUT", 900, minimum=60)
-PAYMENT_POLL_INTERVAL = _env_int("PAYMENT_POLL_INTERVAL", 5, minimum=1)
+PAYMENT_POLL_TIMEOUT  = _env_int("PAYMENT_POLL_TIMEOUT", 3600, minimum=60)
+PAYMENT_POLL_INTERVAL = _env_int("PAYMENT_POLL_INTERVAL", 15, minimum=1)
 
 EXECUTOR_WORKERS   = _env_int("EXECUTOR_WORKERS", 8, minimum=1)
 EXECUTOR_QUEUE_MAX = _env_int("EXECUTOR_QUEUE_MAX", 32, minimum=1)
@@ -232,11 +240,32 @@ _PERSONAL_CLEAR_COLS = tuple(c for c in USER_COLS if c not in _BALANCE_COLS and 
 _STRING_COLS = {"username","sub_plan","sub_id","state","temp_model_id","admin_state"}
 
 # ==========================================================
-# МОДЕРАЦИЯ (ОТКЛЮЧЕНА)
+# МОДЕРАЦИЯ
 # ==========================================================
-def moderation_check(text: str) -> bool:
-  return True
+_mod_fail_open_warned = False
+_mod_warn_lock = threading.Lock()
 
+def moderation_check(text: str) -> bool:
+    global _mod_fail_open_warned
+    if not text or not text.strip(): return True
+    if not MODERATION_API_URL:
+        if MODERATION_FAIL_CLOSED: return False
+        with _mod_warn_lock:
+            if not _mod_fail_open_warned:
+                _mod_fail_open_warned = True
+                log.warning("MODERATION_API_URL пуст — модерация отключена (fail-open)")
+        return True
+    headers = {"Content-Type": "application/json"}
+    if MODERATION_API_KEY: headers["Authorization"] = f"Bearer {MODERATION_API_KEY}"
+    try:
+        r = requests.post(MODERATION_API_URL, json={"text": text}, headers=headers, timeout=HTTP_TIMEOUT_SHORT)
+        if r.status_code != 200:
+            log.warning(f"moderation API {r.status_code}: {r.text[:200]}")
+            return not MODERATION_FAIL_CLOSED
+        return bool(r.json().get("allowed", False))
+    except Exception as e:
+        log.warning(f"moderation error: {e}")
+        return not MODERATION_FAIL_CLOSED
 
 # ==========================================================
 # СЕТЬ / SSRF
@@ -279,7 +308,8 @@ def _read_response(r, max_bytes: int, m_type: str) -> bytes:
     cl = r.headers.get("Content-Length")
     if cl:
         try:
-            if int(cl) > max_bytes: raise RuntimeError("too big")
+            cl_i = int(cl)
+            if cl_i < 0 or cl_i > max_bytes: raise RuntimeError("too big")
         except ValueError: pass
     buf = bytearray()
     for chunk in r.iter_content(chunk_size=64 * 1024):
@@ -306,13 +336,19 @@ def download_tg_file(message) -> Optional[bytes]:
             if obj is None: return None
             file_id = obj.file_id
         info = bot.get_file(file_id)
+        # Пункт 8: проверка размера ДО скачивания
+        if info.file_size and info.file_size > FILE_MAX_MB * 1024 * 1024:
+            log.warning(f"download_tg_file: file too big {info.file_size} bytes")
+            return None
         data = bot.download_file(info.file_path)
         if len(data) > FILE_MAX_MB * 1024 * 1024: return None
         return data
-    except Exception: return None
+    except Exception:
+        log.exception("download_tg_file")
+        return None
 
 # ==========================================================
-# DB: queue.Queue пул соединений
+# DB
 # ==========================================================
 class Db:
     _pool: Optional[queue.Queue] = None
@@ -385,7 +421,19 @@ def init_db():
             admin_state TEXT DEFAULT '', admin_target INTEGER NOT NULL DEFAULT 0,
             admin_ts REAL NOT NULL DEFAULT 0)''')
         cur.execute('''CREATE TABLE IF NOT EXISTS models(model_id TEXT PRIMARY KEY, active INTEGER NOT NULL DEFAULT 1, price INTEGER NOT NULL DEFAULT 0, cost REAL NOT NULL DEFAULT 0)''')
-        cur.execute('''CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, package_id TEXT NOT NULL, amount INTEGER NOT NULL, status TEXT NOT NULL, platega_id TEXT UNIQUE, ts REAL NOT NULL, kind TEXT NOT NULL DEFAULT 'package')''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS payments(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, package_id TEXT NOT NULL,
+            amount INTEGER NOT NULL, status TEXT NOT NULL, platega_id TEXT, ts REAL NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'package')''')
+        _add_column_if_missing(cur, "payments", "provider", "TEXT NOT NULL DEFAULT 'platega'")
+        _add_column_if_missing(cur, "payments", "invoice_payload", "TEXT DEFAULT ''")
+        _add_column_if_missing(cur, "payments", "stars_amount", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(cur, "payments", "refunded_at", "REAL NOT NULL DEFAULT 0")
+        _add_column_if_missing(cur, "payments", "idempotency_key", "TEXT DEFAULT ''")
+        _add_column_if_missing(cur, "payments", "provider_charge_id", "TEXT DEFAULT ''")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_payments_platega ON payments(platega_id) WHERE platega_id IS NOT NULL AND platega_id != ''")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_payments_invoice ON payments(invoice_payload) WHERE invoice_payload IS NOT NULL AND invoice_payload != ''")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_payments_idem ON payments(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key != ''")
         cur.execute('''CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, action TEXT, details TEXT, ts REAL NOT NULL)''')
         cur.execute('''CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)''')
         cur.execute('''CREATE TABLE IF NOT EXISTS works(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, m_type TEXT NOT NULL, model_id TEXT, prompt TEXT, file_id TEXT, ts REAL NOT NULL)''')
@@ -393,9 +441,16 @@ def init_db():
         cur.execute('''CREATE TABLE IF NOT EXISTS transactions(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, m_type TEXT NOT NULL, model_id TEXT, status TEXT NOT NULL, ts REAL NOT NULL, resolved_ts REAL NOT NULL DEFAULT 0, reason TEXT DEFAULT '', payment_id INTEGER, charged INTEGER NOT NULL DEFAULT 0)''')
         cur.execute('''CREATE TABLE IF NOT EXISTS chat_history(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, ts REAL NOT NULL)''')
         cur.execute('''CREATE TABLE IF NOT EXISTS outbox(id INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER NOT NULL, text TEXT NOT NULL, kwargs TEXT NOT NULL DEFAULT '{}', ts REAL NOT NULL, sent_at REAL NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0)''')
-        
+        _add_column_if_missing(cur, "outbox", "next_try", "REAL NOT NULL DEFAULT 0")
+        cur.execute('''CREATE TABLE IF NOT EXISTS payment_poll_state(
+            platega_id TEXT PRIMARY KEY, errors INTEGER NOT NULL DEFAULT 0,
+            next_try REAL NOT NULL DEFAULT 0, last_checked REAL NOT NULL DEFAULT 0)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS payment_events(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL, ref TEXT NOT NULL,
+            event TEXT NOT NULL, details TEXT DEFAULT '', ts REAL NOT NULL)''')
+
         for mid, m in MODELS.items(): cur.execute("INSERT OR IGNORE INTO models VALUES(?,?,?,?)", (mid, m["active"], m["price"], m["cost"]))
-        for k, v in {"payments_on":"1","generations_on":"1","schema_version":"37"}.items(): cur.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
+        for k, v in {"payments_on":"1","generations_on":"1","schema_version":"41"}.items(): cur.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
 
 def get_user(uid: int) -> Optional[dict]:
     with DbConn() as c:
@@ -440,6 +495,11 @@ def incr_generated(uid: int): incr_field(uid, "total_generated", 1)
 def log_ev(uid: int, action: str, details: str = ""):
     with DbConn() as c:
         cur = c.cursor(); cur.execute("INSERT INTO logs(user_id,action,details,ts) VALUES(?,?,?,?)", (uid, action, (details or "")[:500], time.time()))
+
+def payment_event(provider: str, ref: str, event: str, details: str = ""):
+    with DbConn() as c:
+        cur = c.cursor(); cur.execute("INSERT INTO payment_events(provider,ref,event,details,ts) VALUES(?,?,?,?,?)",
+                                       (provider, (ref or "")[:120], event, (details or "")[:500], time.time()))
 
 def setting(k: str, d: str = "1") -> str:
     with DbConn() as c:
@@ -503,10 +563,13 @@ def cleanup_old_data():
     now = time.time()
     with DbConn() as c:
         cur = c.cursor()
-        for tbl, cutoff in (("works", now - WORKS_RETENTION_DAYS * 86400), ("rate", now - 7200), ("logs", now - WORKS_RETENTION_DAYS * 86400)):
+        for tbl, cutoff in (("works", now - WORKS_RETENTION_DAYS * 86400), ("rate", now - 7200), ("logs", now - WORKS_RETENTION_DAYS * 86400), ("payment_events", now - WORKS_RETENTION_DAYS * 86400)):
             while not SHUTDOWN.is_set():
                 cur.execute(f"DELETE FROM {tbl} WHERE rowid IN (SELECT rowid FROM {tbl} WHERE ts < ? LIMIT {CLEANUP_BATCH})", (cutoff,))
                 if cur.rowcount < CLEANUP_BATCH: break
+        # Пункт 13: чистим старые оплаченные/просроченные платежи
+        old_payments_cutoff = now - 365 * 86400
+        cur.execute("DELETE FROM payments WHERE ts < ? AND status IN ('REFUNDED', 'EXPIRED')", (old_payments_cutoff,))
 
 def start_cleanup_worker():
     def loop():
@@ -571,26 +634,17 @@ class Finance:
                 except Exception: pass
                 raise
 
-    @staticmethod
-    def rollback_payment(uid: int, package_id: str, kind: str, reason: str):
-        if uid is None: return
-        try:
-            with DbConn() as c:
-                cur = c.cursor()
-                if kind == "package":
-                    p = PACKAGES.get(package_id)
-                    if not p: return
-                    col = BAL_FIELD[p["type"]]
-                    cur.execute(f"UPDATE users SET {col}=MAX({col}-?,0) WHERE user_id=?", (p["count"], uid))
-                elif kind == "subscription":
-                    cur.execute("UPDATE users SET sub_plan='', sub_until=0, sub_used=0 WHERE user_id=?", (uid,))
-            log_ev(uid, "payment_rollback", f"{kind}:{package_id} {reason}")
-        except Exception: log.exception(f"rollback_payment {uid} {package_id}")
-
 def recover_stuck_transactions():
     cutoff = time.time() - STUCK_TX_TIMEOUT
     with DbConn() as c:
-        cur = c.cursor(); cur.execute("SELECT id FROM transactions WHERE status='PENDING' AND ts < ?", (cutoff,)); ids = [r[0] for r in cur.fetchall()]
+        cur = c.cursor()
+        cur.execute("""SELECT t.id, t.payment_id FROM transactions t
+                       LEFT JOIN payments p ON p.id = t.payment_id
+                       WHERE t.status='PENDING' AND t.ts < ?
+                       AND (t.payment_id IS NULL OR p.id IS NULL OR p.status != 'PENDING')""", (cutoff,))
+        ids = [r[0] for r in cur.fetchall()]
+        # Пункт 17: чистим зависшие платежи
+        cur.execute("UPDATE payments SET status='EXPIRED' WHERE status='PENDING' AND ts < ?", (cutoff,))
     for tid in ids:
         try: Finance.refund(tid, "recovered_stuck")
         except Exception: log.exception(f"recover tx {tid} failed")
@@ -606,54 +660,131 @@ def start_recovery_worker():
 # ==========================================================
 # ОПЛАТА
 # ==========================================================
-def apply_payment_atomic(tx_id: str) -> bool:
+def _apply_payment_tx(cur, kind: str, item_id: str, uid: int, payment_row_id: int):
+    if kind == "package":
+        p = PACKAGES.get(item_id)
+        if not p: raise RuntimeError(f"unknown package {item_id}")
+        col = BAL_FIELD[p["type"]]
+        cur.execute(f"UPDATE users SET {col}={col}+? WHERE user_id=?", (p["count"], uid))
+        msg = f"✅ Оплата «{p['title']}» зачислена! Баланс пополнен.\n\n🧾 Чек: pay#{payment_row_id}"
+    elif kind == "subscription":
+        t = SUB_TARIFFS.get(item_id)
+        if not t: raise RuntimeError(f"unknown tariff {item_id}")
+        cur.execute("UPDATE users SET sub_plan=?, sub_until=?, sub_used=0 WHERE user_id=?",
+                    (item_id, time.time() + t["days"]*86400, uid))
+        msg = f"✅ Подписка «{t['title']}» активирована на {t['days']} дней!\n\n🧾 Чек: pay#{payment_row_id}"
+    else:
+        raise RuntimeError(f"unknown kind {kind}")
+    cur.execute("INSERT INTO logs(user_id,action,details,ts) VALUES(?,?,?,?)",
+                (uid, "payment_paid", f"{kind}:{item_id} pay#{payment_row_id}", time.time()))
+    cur.execute("INSERT INTO outbox(uid,text,kwargs,ts,next_try) VALUES(?,?,?,?,?)", (uid, msg, "{}", time.time(), time.time()))
+
+def apply_payment_atomic_platega(platega_id: str) -> bool:
     with DbConn() as c:
         cur = c.cursor()
         try:
             cur.execute("BEGIN IMMEDIATE")
-            cur.execute("UPDATE payments SET status='PAID' WHERE platega_id=? AND status='PENDING'", (tx_id,))
-            if cur.rowcount != 1: cur.execute("ROLLBACK"); return False
-            cur.execute("SELECT user_id, package_id, kind FROM payments WHERE platega_id=?", (tx_id,))
+            cur.execute("SELECT id, user_id, package_id, kind FROM payments WHERE platega_id=? AND provider='platega' AND status IN ('PENDING', 'EXPIRED')", (platega_id,))
             row = cur.fetchone()
-            if not row: cur.execute("ROLLBACK"); return False
-            uid, pid, kind = row
-            if kind == "package":
-                p = PACKAGES.get(pid)
-                if not p: cur.execute("ROLLBACK"); return False
-                col = BAL_FIELD[p["type"]]
-                cur.execute(f"UPDATE users SET {col}={col}+? WHERE user_id=?", (p["count"], uid))
-                msg = f"✅ Оплата «{p['title']}» зачислена!"
-            else:
-                t = SUB_TARIFFS.get(pid)
-                if not t: cur.execute("ROLLBACK"); return False
-                cur.execute("UPDATE users SET sub_plan=?, sub_until=?, sub_used=0 WHERE user_id=?", (pid, time.time() + t["days"]*86400, uid))
-                msg = f"✅ Подписка «{t['title']}» активирована на {t['days']} дней!"
-            cur.execute("INSERT INTO logs(user_id,action,details,ts) VALUES(?,?,?,?)", (uid, "payment_paid", f"{kind}:{pid} {tx_id}", time.time()))
-            cur.execute("INSERT INTO outbox(uid,text,kwargs,ts) VALUES(?,?,?,?)", (uid, msg, "{}", time.time()))
+            if not row:
+                cur.execute("ROLLBACK"); return False
+            pay_id, uid, pid, kind = row
+            cur.execute("UPDATE payments SET status='PAID' WHERE id=?", (pay_id,))
+            _apply_payment_tx(cur, kind, pid, uid, pay_id)
             cur.execute("COMMIT")
+            payment_event("platega", platega_id, "paid", f"pay#{pay_id}")
             return True
         except Exception:
             try: cur.execute("ROLLBACK")
             except Exception: pass
-            log.exception(f"apply_payment_atomic {tx_id}")
+            log.exception(f"apply_payment_atomic_platega {platega_id}")
             return False
 
-def check_payment_status(tx_id: str) -> str:
+def apply_payment_atomic_stars(invoice_payload: str, tg_charge_id: str, total_amount: int, currency: str) -> Tuple[bool, str]:
+    if not tg_charge_id: return False, "empty_charge_id" # Пункт 2
+    with DbConn() as c:
+        cur = c.cursor()
+        try:
+            cur.execute("BEGIN IMMEDIATE")
+            cur.execute("SELECT id, user_id, package_id, kind, stars_amount FROM payments WHERE invoice_payload=? AND provider='stars'", (invoice_payload,))
+            row = cur.fetchone()
+            if not row:
+                cur.execute("ROLLBACK"); return False, "unknown_payload"
+            pay_id, uid, pid, kind, expected_stars = row
+            if int(total_amount) != int(expected_stars):
+                cur.execute("ROLLBACK"); return False, "amount_mismatch"
+            if (currency or "").upper() != "XTR":
+                cur.execute("ROLLBACK"); return False, "currency_mismatch"
+            cur.execute("UPDATE payments SET status='PAID', provider_charge_id=? WHERE id=? AND status='PENDING'", (tg_charge_id, pay_id))
+            if cur.rowcount != 1:
+                cur.execute("ROLLBACK"); return False, "already_paid"
+            _apply_payment_tx(cur, kind, pid, uid, pay_id)
+            cur.execute("COMMIT")
+            log_ev(uid, "stars_payment", f"{kind}:{pid} charge={tg_charge_id} pay#{pay_id}")
+            payment_event("stars", invoice_payload, "paid", f"pay#{pay_id} charge={tg_charge_id}")
+            return True, "ok"
+        except Exception:
+            try: cur.execute("ROLLBACK")
+            except Exception: pass
+            log.exception(f"apply_payment_atomic_stars {invoice_payload}")
+            return False, "exception"
+
+def check_payment_status(tx_id: str) -> dict:
     headers = {"X-MerchantId": PLATEGA_ID, "X-Secret": PLATEGA_SECRET}
     try:
         r = requests.get(f"{PLATEGA_URL}/v2/transaction/{tx_id}", headers=headers, timeout=HTTP_TIMEOUT_SHORT)
-        if r.status_code != 200: return "ERROR"
-        return (r.json().get("status") or "PENDING").upper()
-    except Exception: return "ERROR"
+        if r.status_code != 200: return {"status": "ERROR"}
+        return r.json()
+    except Exception: return {"status": "ERROR"}
 
-def _poll_one_payment(tx_id: str, uid: int, package_id: str, kind: str) -> None:
-    st = check_payment_status(tx_id)
+def _poll_one_payment(tx_id: str) -> None:
+    j = check_payment_status(tx_id)
+    st = (j.get("status") or "PENDING").upper()
+    
     if st == "CONFIRMED":
-        apply_payment_atomic(tx_id)
+        # Пункт 3: сверяем сумму и payload
+        with DbConn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT amount FROM payments WHERE platega_id=?", (tx_id,))
+            row = cur.fetchone()
+            if row:
+                local_amount = row[0]
+                remote_amount = (j.get("paymentDetails") or {}).get("amount")
+                if remote_amount and int(remote_amount) != int(local_amount):
+                    log.error(f"platega amount mismatch {tx_id}: local={local_amount} remote={remote_amount}")
+                    notify(ADMIN_ID, f"⚠️ MISMATCH Platega {tx_id}: {local_amount} vs {remote_amount}")
+                    return # Не зачисляем
+        success = apply_payment_atomic_platega(tx_id)
+        if success: # Пункт 4: удаляем только при успехе
+            with DbConn() as c: c.cursor().execute("DELETE FROM payment_poll_state WHERE platega_id=?", (tx_id,))
     elif st in ("CANCELED", "CHARGEBACKED"):
         with DbConn() as c:
-            cur = c.cursor(); cur.execute("UPDATE payments SET status=? WHERE platega_id=? AND status='PENDING'", (st, tx_id)); rows = cur.rowcount
-        if rows: Finance.rollback_payment(uid, package_id, kind, st.lower())
+            cur = c.cursor()
+            cur.execute("BEGIN IMMEDIATE")
+            cur.execute("SELECT id, user_id, package_id, kind FROM payments WHERE platega_id=? AND status IN ('PENDING', 'EXPIRED')", (tx_id,))
+            r = cur.fetchone()
+            if r:
+                pay_id, uid, pid, kind = r
+                cur.execute("UPDATE payments SET status=? WHERE id=?", (st, pay_id))
+                log_ev(uid, "payment_canceled", f"{kind}:{pid} {tx_id}")
+                payment_event("platega", tx_id, "canceled", f"pay#{pay_id} status={st}")
+                try:
+                    notify(uid, f"⚠️ Платёж не прошёл (статус {st}). Если деньги списались — напиши в поддержку: {SUPPORT_URL}")
+                except Exception: pass
+            cur.execute("DELETE FROM payment_poll_state WHERE platega_id=?", (tx_id,))
+            cur.execute("COMMIT")
+    elif st == "ERROR":
+        with DbConn() as c:
+            cur = c.cursor()
+            cur.execute("BEGIN IMMEDIATE")
+            cur.execute("SELECT errors FROM payment_poll_state WHERE platega_id=?", (tx_id,))
+            r = cur.fetchone()
+            errs = (r[0] if r else 0) + 1
+            backoff = PAYMENT_POLL_BACKOFF_MAX if errs >= PAYMENT_POLL_MAX_ERRORS else min(PAYMENT_POLL_BACKOFF_MAX, 2 ** errs)
+            next_try = time.time() + backoff
+            cur.execute("INSERT OR REPLACE INTO payment_poll_state(platega_id,errors,next_try,last_checked) VALUES(?,?,?,?)",
+                        (tx_id, errs, next_try, time.time()))
+            cur.execute("COMMIT")
 
 def _poll_future_done(fut):
     try: fut.result()
@@ -665,33 +796,107 @@ def payment_poller_single_loop():
         if SHUTDOWN.is_set(): return
         try:
             horizon = time.time() - PAYMENT_POLL_TIMEOUT
+            now = time.time()
             with DbConn() as c:
-                cur = c.cursor(); cur.execute("SELECT platega_id, user_id, package_id, kind FROM payments WHERE status='PENDING' AND ts > ?", (horizon,)); rows = cur.fetchall()
-                cur.execute("UPDATE payments SET status='EXPIRED' WHERE status='PENDING' AND ts <= ?", (horizon,))
-            for tx_id, uid, pid, kind in rows:
-                try: PAY_EXECUTOR.submit(_poll_one_payment, tx_id, uid, pid, kind).add_done_callback(_poll_future_done)
+                cur = c.cursor()
+                cur.execute("""SELECT p.platega_id, p.user_id FROM payments p
+                               LEFT JOIN payment_poll_state s ON s.platega_id = p.platega_id
+                               WHERE p.status='PENDING' AND p.provider='platega' AND p.ts > ?
+                               AND (s.next_try IS NULL OR s.next_try <= ?)""", (horizon, now))
+                rows = cur.fetchall()
+                # Пункт 5: не ставим EXPIRED, если мы всё ещё можем получить CONFIRMED.
+                # Но если статус PENDING и истекло время — просто перестаем поллить, но не ставим EXPIRED,
+                # чтобы вебхук/поллинг мог позже подтвердить.
+            for tx_id, _ in rows:
+                try: PAY_EXECUTOR.submit(_poll_one_payment, tx_id).add_done_callback(_poll_future_done)
                 except Exception: pass
         except Exception: log.exception("payment_poller loop")
 
-def create_platega_payment(uid: int, item_id: str, amount: int, desc: str, kind: str, prefix: str) -> bool:
+def create_platega_payment(uid: int, item_id: str, amount: int, desc: str, kind: str, prefix: str, idem_key: str = "") -> bool:
     if not (PLATEGA_ID and PLATEGA_SECRET): return False
+    if not RETURN_URL: # Пункт 11
+        log.warning("RETURN_URL не задан — СБП отключен")
+        return False
     order_uuid = str(uuid.uuid4())
-    payload = {"paymentMethod": 2, "id": order_uuid, "paymentDetails": {"amount": amount, "currency": "RUB"}, "description": desc, "return": RETURN_URL, "failedUrl": RETURN_URL, "payload": f"{uid}_{prefix}_{item_id}_{int(time.time())}"}
+    payload_str = f"{uid}_{prefix}_{item_id}_{int(time.time())}"
+    payload = {"paymentMethod": 2, "id": order_uuid, "paymentDetails": {"amount": amount, "currency": "RUB"}, "description": desc, "return": RETURN_URL, "failedUrl": RETURN_URL, "payload": payload_str}
     headers = {"X-MerchantId": PLATEGA_ID, "X-Secret": PLATEGA_SECRET}
     try:
         r = requests.post(f"{PLATEGA_URL}/v2/transaction/process", json=payload, headers=headers, timeout=HTTP_TIMEOUT_SHORT)
-        if r.status_code != 200: return False
-        j = r.json(); pay_url, tx_id = j.get("url"), j.get("transactionId")
+        if r.status_code != 200:
+            log.warning(f"platega {r.status_code}: {r.text[:200]}")
+            return False
+        j = r.json()
+        pay_url, tx_id = j.get("url"), j.get("transactionId")
         if not pay_url or not tx_id: return False
+        returned_payload = j.get("payload")
+        if returned_payload and returned_payload != payload_str:
+            log.error(f"platega payload mismatch: sent={payload_str!r} got={returned_payload!r}")
+            return False
         with DbConn() as c:
             cur = c.cursor()
-            try: cur.execute("INSERT INTO payments(user_id,package_id,amount,status,platega_id,ts,kind) VALUES(?,?,?,?,?,?,?)", (uid, item_id, amount, "PENDING", tx_id, time.time(), kind))
-            except sqlite3.IntegrityError: return False
+            try:
+                cur.execute("""INSERT INTO payments(user_id,package_id,amount,status,platega_id,ts,kind,provider,idempotency_key)
+                               VALUES(?,?,?,?,?,?,?, 'platega', ?)""",
+                            (uid, item_id, amount, "PENDING", tx_id, time.time(), kind, idem_key or ""))
+            except sqlite3.IntegrityError:
+                log.warning(f"duplicate platega_id {tx_id} or idem {idem_key}")
+                return False
         kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("💳 Оплатить (СБП)", url=pay_url))
-        notify(uid, f"💳 {desc} — {amount}₽:", reply_markup=kb.to_dict())
-        log_ev(uid, "payment_created", f"{kind}:{item_id} {tx_id}")
+        notify(uid, f"💳 {desc} — {amount}₽\n\n🧾 Заказ: {tx_id}\n\n<i>После оплаты нажми «Проверить» через минуту.</i>", reply_markup=kb.to_dict())
+        log_ev(uid, "payment_created", f"platega {kind}:{item_id} {tx_id}")
+        payment_event("platega", tx_id, "created", f"user={uid} {kind}:{item_id}")
         return True
-    except Exception: return False
+    except Exception:
+        log.exception(f"create_platega_payment {uid} {item_id}")
+        return False
+
+# ==========================================================
+# TELEGRAM STARS
+# ==========================================================
+def create_stars_invoice(uid: int, item_id: str, amount_rub: int, desc: str, kind: str) -> bool:
+    if amount_rub <= 0: return False
+    stars_amount = max(1, int(round(amount_rub / STARS_RUB_PER_STAR)))
+    invoice_payload = f"stars_{kind}_{item_id}_{uid}_{uuid.uuid4().hex[:12]}"
+    with DbConn() as c:
+        cur = c.cursor()
+        try:
+            cur.execute("""INSERT INTO payments(user_id,package_id,amount,status,platega_id,ts,kind,provider,invoice_payload,stars_amount)
+                           VALUES(?,?,?,?,?,?,?, 'stars', ?, ?)""",
+                        (uid, item_id, amount_rub, "PENDING", None, time.time(), kind, invoice_payload, stars_amount))
+        except sqlite3.IntegrityError:
+            log.exception("stars invoice duplicate (unexpected)")
+            return False
+    prices = [types.LabeledPrice(label=desc, amount=stars_amount)]
+    try:
+        bot.send_invoice(
+            chat_id=uid,
+            title=desc,
+            description=f"Оплата через Telegram Stars: {desc}",
+            invoice_payload=invoice_payload,
+            provider_token="",
+            currency="XTR",
+            prices=prices,
+        )
+        log_ev(uid, "stars_invoice_created", f"{kind}:{item_id} {stars_amount} stars")
+        payment_event("stars", invoice_payload, "created", f"user={uid} {kind}:{item_id} stars={stars_amount}")
+        return True
+    except Exception as e:
+        log.exception(f"stars_invoice {uid}: {e}")
+        with DbConn() as c:
+            c.cursor().execute("DELETE FROM payments WHERE invoice_payload=? AND status='PENDING'", (invoice_payload,))
+        return False
+
+def refund_stars(uid: int, charge_id: str) -> bool:
+    if not STARS_AUTO_REFUND or not charge_id: return False
+    try:
+        ok = bot.refund_star_payment(user_id=uid, telegram_payment_charge_id=charge_id)
+        payment_event("stars", charge_id, "refunded" if ok else "refund_failed", f"user={uid}")
+        return bool(ok)
+    except Exception:
+        log.exception(f"refund_stars uid={uid} charge={charge_id}")
+        payment_event("stars", charge_id, "refund_exception", f"user={uid}")
+        return False
 
 # ==========================================================
 # SAFE SEND/EDIT
@@ -717,9 +922,10 @@ def safe_send(uid: int, text: str, **kwargs):
         try: return bot.send_message(uid, text, **kwargs)
         except ApiTelegramException as e:
             ra = _retry_after_seconds(e)
-            if ra is not None and attempt < 2: time.sleep(ra); continue
-            return None
-        except Exception: return None
+            if ra is not None and attempt < 2: time.sleep(min(ra, 5)); continue
+            log.warning(f"safe_send {uid}: {e}"); return None
+        except Exception as e:
+            log.warning(f"safe_send {uid}: {e}"); return None
     return None
 
 def safe_send_media(uid: int, kind: str, file_obj, **kwargs):
@@ -730,9 +936,10 @@ def safe_send_media(uid: int, kind: str, file_obj, **kwargs):
         try: return fn(uid, file_obj, **kwargs)
         except ApiTelegramException as e:
             ra = _retry_after_seconds(e)
-            if ra is not None and attempt < 2: time.sleep(ra); continue
-            return None
-        except Exception: return None
+            if ra is not None and attempt < 2: time.sleep(min(ra, 5)); continue
+            log.warning(f"safe_send_media {kind} {uid}: {e}"); return None
+        except Exception as e:
+            log.warning(f"safe_send_media {kind} {uid}: {e}"); return None
     return None
 
 def safe_edit(uid: int, msg_id: int, text: str, **kwargs):
@@ -743,31 +950,48 @@ def safe_edit(uid: int, msg_id: int, text: str, **kwargs):
             s = str(e).lower()
             if "message is not modified" in s: return
             ra = _retry_after_seconds(e)
-            if ra is not None and attempt < 2: time.sleep(ra); continue
-            return
-        except Exception: return
+            if ra is not None and attempt < 2: time.sleep(min(ra, 5)); continue
+            log.warning(f"safe_edit {uid}: {e}"); return
+        except Exception as e:
+            log.warning(f"safe_edit {uid}: {e}"); return
 
 # ==========================================================
 # OUTBOX
 # ==========================================================
 def notify(uid: int, text: str, **kwargs):
     with DbConn() as c:
-        cur = c.cursor(); cur.execute("INSERT INTO outbox(uid,text,kwargs,ts) VALUES(?,?,?,?)", (uid, text, json.dumps(kwargs, ensure_ascii=False, default=str), time.time()))
+        cur = c.cursor()
+        cur.execute("INSERT INTO outbox(uid,text,kwargs,ts,next_try) VALUES(?,?,?,?,?)",
+                    (uid, text, json.dumps(kwargs, ensure_ascii=False, default=str), time.time(), time.time()))
 
 def start_notify_worker():
     def loop():
         while not SHUTDOWN.is_set():
             try:
+                now = time.time()
                 with DbConn() as c:
-                    cur = c.cursor(); cur.execute("SELECT id, uid, text, kwargs, attempts FROM outbox WHERE sent_at=0 AND attempts < 5 ORDER BY id LIMIT ?", (OUTBOX_BATCH,)); rows = cur.fetchall()
+                    cur = c.cursor()
+                    cur.execute("""SELECT id, uid, text, kwargs, attempts FROM outbox
+                                   WHERE sent_at=0 AND attempts < ? AND next_try <= ?
+                                   ORDER BY id LIMIT ?""", (OUTBOX_MAX_ATTEMPTS, now, OUTBOX_BATCH))
+                    rows = cur.fetchall()
                     for oid, uid, text, kw_json, attempts in rows:
                         try:
                             kw = json.loads(kw_json) if kw_json else {}
-                            safe_send(uid, text, **kw)
-                            cur.execute("UPDATE outbox SET sent_at=? WHERE id=?", (time.time(), oid))
+                            res = safe_send(uid, text, **kw)
+                            if res is not None:
+                                cur.execute("UPDATE outbox SET sent_at=? WHERE id=?", (time.time(), oid))
+                            else:
+                                raise RuntimeError("send returned None")
                         except Exception:
-                            cur.execute("UPDATE outbox SET attempts=attempts+1 WHERE id=?", (oid,))
-            except Exception: pass
+                            new_attempts = attempts + 1
+                            if new_attempts >= OUTBOX_MAX_ATTEMPTS:
+                                cur.execute("UPDATE outbox SET attempts=?, sent_at=-1 WHERE id=?", (new_attempts, oid))
+                            else:
+                                backoff = min(OUTBOX_RETRY_MAX_SEC, 2 ** new_attempts)
+                                cur.execute("UPDATE outbox SET attempts=?, next_try=? WHERE id=?",
+                                            (new_attempts, time.time() + backoff, oid))
+            except Exception: log.exception("notify loop")
             SHUTDOWN.wait(2)
     threading.Thread(target=loop, daemon=True, name="notify").start()
 
@@ -837,13 +1061,119 @@ def register_handlers():
         safe_send(uid, f"👋 Привет, @{uname}!\n\nЯ — <b>Нейро-Студия</b>.{bonus}\n\nВыбери, что хочешь сгенерировать:", reply_markup=main_menu(uid), parse_mode="HTML")
 
     @bot.message_handler(commands=["help"])
-    def cmd_help(m): safe_send(m.chat.id, f"🤖 <b>Нейро-Студия</b>\n\n• /start — меню\n• /terms — условия\n• /privacy — политика\n• /delete_me — удалить данные\n\nПоддержка: {SUPPORT_URL}", parse_mode="HTML", disable_web_page_preview=True)
+    def cmd_help(m): safe_send(m.chat.id, f"🤖 <b>Нейро-Студия</b>\n\n• /start — меню\n• /terms — условия\n• /privacy — политика\n• /refund — возврат\n• /delete_me — удалить данные\n\nПоддержка: {SUPPORT_URL}", parse_mode="HTML", disable_web_page_preview=True)
 
     @bot.message_handler(commands=["terms"])
-    def cmd_terms(m): safe_send(m.chat.id, f"📄 <b>Условия</b>\n\n1. Генерации через сторонние AI.\n2. Запрещено: ЦП, насилие, экстремизм.\n3. Возврат — при сбое.\n\n{TERMS_URL}", parse_mode="HTML")
+    def cmd_terms(m):
+        txt = (
+            "📄 <b>Условия оказания услуг</b>\n\n"
+            "1. Услуги — генерация медиа через сторонние AI-сервисы.\n"
+            "2. Запрещено: ЦП, насилие, экстремизм, нарушение прав третьих лиц.\n"
+            f"3. Возврат: в течение {REFUND_WINDOW_HOURS} ч. после оплаты. Для пакетов — пропорционально остатку. "
+            f"Для подписок — пропорционально неиспользованным дням. Команда /refund.\n"
+            "4. Возврат при техническом сбое генерации — автоматический.\n"
+            "5. Платежи через СБП (Platega) и Telegram Stars.\n"
+            f"6. Поддержка: {SUPPORT_URL}\n"
+            f"\n{TERMS_URL}"
+        )
+        safe_send(m.chat.id, txt, parse_mode="HTML", disable_web_page_preview=True)
 
     @bot.message_handler(commands=["privacy"])
-    def cmd_privacy(m): safe_send(m.chat.id, f"🔒 <b>Приватность</b>\n\nХраним ID и промпты до {WORKS_RETENTION_DAYS} дней. Удалить: /delete_me\n\n{PRIVACY_URL}", parse_mode="HTML")
+    def cmd_privacy(m): safe_send(m.chat.id, f"🔒 <b>Приватность</b>\n\nХраним ID и промпты до {WORKS_RETENTION_DAYS} дней. <b>Платёжные данные не удаляются (54-ФЗ).</b> Удалить остальное: /delete_me\n\n{PRIVACY_URL}", parse_mode="HTML")
+
+    @bot.message_handler(commands=["refund"])
+    def cmd_refund(m):
+        uid = m.from_user.id
+        cutoff = time.time() - REFUND_WINDOW_HOURS * 3600
+        with DbConn() as c:
+            cur = c.cursor()
+            cur.execute("""SELECT id, package_id, amount, ts, kind, provider FROM payments
+                           WHERE user_id=? AND status='PAID' AND refunded_at=0 AND ts > ?
+                           ORDER BY id DESC LIMIT 5""", (uid, cutoff))
+            rows = cur.fetchall()
+        if not rows:
+            return safe_send(uid, f"ℹ️ Нет доступных для возврата покупок за последние {REFUND_WINDOW_HOURS} ч.\n"
+                                  f"Если проблема — напиши в поддержку: {SUPPORT_URL}.")
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        for pid, pkg, amt, ts, kind, provider in rows:
+            label = PACKAGES.get(pkg, {}).get("title") or SUB_TARIFFS.get(pkg, {}).get("title") or pkg
+            prov = "⭐" if provider == "stars" else "💳"
+            kb.add(types.InlineKeyboardButton(f"↩️ {prov} {label} — {amt}₽ ({datetime.fromtimestamp(ts):%d.%m %H:%M})",
+                                              callback_data=f"refund_{pid}"))
+        kb.add(types.InlineKeyboardButton("⬅️ В меню", callback_data="menu_main"))
+        safe_send(uid, "Выбери покупку для возврата:", reply_markup=kb)
+
+    @bot.callback_query_handler(func=lambda c: c.data.startswith("refund_"))
+    def cb_refund(c):
+        try: pay_id = int(c.data.split("_", 1)[1])
+        except ValueError: return bot.answer_callback_query(c.id, "Ошибка.", show_alert=True)
+        ok, msg = do_refund_package(c.from_user.id, pay_id)
+        bot.answer_callback_query(c.id, msg, show_alert=True)
+
+    def do_refund_package(uid: int, pay_id: int) -> Tuple[bool, str]:
+        with DbConn() as c:
+            cur = c.cursor()
+            try:
+                cur.execute("BEGIN IMMEDIATE")
+                cur.execute("SELECT user_id, package_id, amount, status, kind, refunded_at, provider, provider_charge_id, invoice_payload FROM payments WHERE id=?", (pay_id,))
+                r = cur.fetchone()
+                if not r: cur.execute("ROLLBACK"); return False, "❌ Платёж не найден."
+                owner, pid, amt, status, kind, refunded_at, provider, charge_id, inv_payload = r
+                if owner != uid: cur.execute("ROLLBACK"); return False, "❌ Не твой платёж."
+                if status != "PAID" or refunded_at: cur.execute("ROLLBACK"); return False, "❌ Уже возвращён или не оплачен."
+
+                if kind == "package":
+                    p = PACKAGES.get(pid)
+                    if not p: cur.execute("ROLLBACK"); return False, "❌ Неизвестный пакет."
+                    col = BAL_FIELD[p["type"]]
+                    cur.execute(f"SELECT {col} FROM users WHERE user_id=?", (uid,))
+                    bal = cur.fetchone()[0]
+                    if bal <= 0:
+                        cur.execute("ROLLBACK"); return False, "❌ Пакет полностью использован."
+                    used = p["count"] - min(bal, p["count"])
+                    refund_amount = int(round(amt * (p["count"] - used) / p["count"]))
+                    if refund_amount <= 0:
+                        cur.execute("ROLLBACK"); return False, "❌ Нечего возвращать."
+                    to_deduct = min(bal, p["count"])
+                    cur.execute(f"UPDATE users SET {col}={col}-? WHERE user_id=?", (to_deduct, uid))
+                    cur.execute("UPDATE payments SET status='REFUNDED', refunded_at=? WHERE id=?", (time.time(), pay_id))
+                    log_ev(uid, "refund_requested", f"pay#{pay_id} {refund_amount}₽ (used {used}/{p['count']})")
+                    cur.execute("COMMIT")
+                elif kind == "subscription":
+                    t = SUB_TARIFFS.get(pid)
+                    if not t: cur.execute("ROLLBACK"); return False, "❌ Неизвестный тариф."
+                    cur.execute("SELECT sub_until, sub_used FROM users WHERE user_id=?", (uid,))
+                    sub_until, sub_used = cur.fetchone()
+                    if sub_until <= time.time():
+                        cur.execute("ROLLBACK"); return False, "❌ Подписка уже истекла."
+                    days_left = max(0, int((sub_until - time.time()) // 86400))
+                    if days_left <= 0:
+                        cur.execute("ROLLBACK"); return False, "❌ Меньше дня осталось, возврат невозможен."
+                    refund_amount = int(round(amt * days_left / t["days"]))
+                    if refund_amount <= 0:
+                        cur.execute("ROLLBACK"); return False, "❌ Нечего возвращать."
+                    cur.execute("UPDATE users SET sub_plan='', sub_until=0, sub_used=0 WHERE user_id=?", (uid,))
+                    cur.execute("UPDATE payments SET status='REFUNDED', refunded_at=? WHERE id=?", (time.time(), pay_id))
+                    log_ev(uid, "refund_requested", f"pay#{pay_id} {refund_amount}₽ (days_left {days_left}/{t['days']})")
+                    cur.execute("COMMIT")
+                else:
+                    cur.execute("ROLLBACK"); return False, "❌ Неизвестный тип покупки."
+
+                if provider == "stars" and charge_id:
+                    if refund_stars(uid, charge_id):
+                        notify(uid, f"✅ Возврат {refund_amount}₽ (⭐ Stars) оформлен. Зачисление — в течение суток.")
+                    else:
+                        notify(uid, f"⚠️ Возврат {refund_amount}₽ оформлен в базе, но Stars-возврат не удался. Напиши в поддержку: {SUPPORT_URL}")
+                        notify(ADMIN_ID, f"⚠️ Stars refund failed: user={uid} pay#{pay_id} charge={charge_id} amt={refund_amount}₽")
+                else: # Пункт 7: честный текст для Platega
+                    notify(uid, f"✅ Заявка на возврат {refund_amount}₽ оформлена. Админ свяжется с вами для возврата на карту.")
+                    notify(ADMIN_ID, f"↩️ REFUND platega: user {uid} pay#{pay_id} {refund_amount}₽ — верни через Platega вручную.")
+                return True, "✅ Возврат оформлен."
+            except Exception:
+                try: cur.execute("ROLLBACK")
+                except Exception: pass
+                log.exception(f"refund {pay_id}")
+                return False, "❌ Ошибка возврата."
 
     @bot.message_handler(commands=["delete_me"])
     def cmd_delete_me(m):
@@ -959,6 +1289,13 @@ def register_handlers():
         uid = m.from_user.id
         u = get_user(uid)
         if not u or u["is_banned"]: return
+
+        if TERMS_REQUIRED and not u.get("onboarded") and uid != ADMIN_ID:
+            if (m.text or "").strip() != "/terms":
+                return safe_send(m.chat.id, "⚠️ Перед использованием бота прочитай и прими условия: /terms")
+            else:
+                upd(uid, onboarded=1)
+                return safe_send(m.chat.id, "✅ Условия приняты. Нажми /start для продолжения.")
 
         if uid == ADMIN_ID and u.get("admin_state"):
             if u["admin_state"] == "find_user":
@@ -1121,14 +1458,143 @@ def register_handlers():
         bot.answer_callback_query(c.id)
         pid = c.data[4:]; p = PACKAGES.get(pid)
         if not p: return bot.answer_callback_query(c.id, "Неверный пакет.", show_alert=True)
-        if not create_platega_payment(c.from_user.id, pid, p["price"], p["title"], "package", "pay"): safe_send(c.from_user.id, "⚠️ Оплата недоступна.")
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        kb.add(types.InlineKeyboardButton(f"✅ Подтвердить — {p['price']}₽", callback_data=f"payok_{pid}"))
+        kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_buy"))
+        safe_edit(c.message.chat.id, c.message.message_id,
+                  f"🛒 <b>Подтверждение покупки</b>\n\n"
+                  f"Товар: <b>{p['title']}</b>\n"
+                  f"Сумма: <b>{p['price']}₽</b>\n\n"
+                  f"Оплата через СБП или Telegram Stars.\n"
+                  f"Возврат — /refund в течение {REFUND_WINDOW_HOURS} ч. (пропорционально остатку).",
+                  reply_markup=kb, parse_mode="HTML")
+
+    @bot.callback_query_handler(func=lambda c: c.data.startswith("payok_"))
+    def cb_pay_ok(c):
+        bot.answer_callback_query(c.id)
+        pid = c.data[6:]; p = PACKAGES.get(pid)
+        if not p: return bot.answer_callback_query(c.id, "Неверный пакет.", show_alert=True)
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.add(types.InlineKeyboardButton("💳 СБП (Карта)", callback_data=f"payrub_{pid}"),
+               types.InlineKeyboardButton("⭐ Telegram Stars", callback_data=f"paystars_{pid}"))
+        kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data=f"pay_{pid}"))
+        safe_edit(c.message.chat.id, c.message.message_id,
+                  f"Выбери способ оплаты для «{p['title']}» ({p['price']}₽):",
+                  reply_markup=kb)
+
+    @bot.callback_query_handler(func=lambda c: c.data.startswith("payrub_"))
+    def cb_pay_rub(c):
+        bot.answer_callback_query(c.id)
+        pid = c.data[7:]; p = PACKAGES.get(pid)
+        if not p: return bot.answer_callback_query(c.id, "Неверный пакет.", show_alert=True)
+        idem = f"platega:{c.from_user.id}:{pid}:{uuid.uuid4().hex[:8]}"
+        if not create_platega_payment(c.from_user.id, pid, p["price"], p["title"], "package", "pay", idem):
+            safe_send(c.from_user.id, "⚠️ Оплата СБП временно недоступна. Попробуй Stars или поддержку.")
+
+    @bot.callback_query_handler(func=lambda c: c.data.startswith("paystars_"))
+    def cb_pay_stars(c):
+        bot.answer_callback_query(c.id)
+        pid = c.data[9:]; p = PACKAGES.get(pid)
+        if not p: return bot.answer_callback_query(c.id, "Неверный пакет.", show_alert=True)
+        if not create_stars_invoice(c.from_user.id, pid, p["price"], p["title"], "package"):
+            safe_send(c.from_user.id, "⚠️ Ошибка при создании счета Stars. Попробуй СБП.")
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("sub_"))
     def cb_sub_buy(c):
         bot.answer_callback_query(c.id)
         code = c.data[4:]; t = SUB_TARIFFS.get(code)
         if not t: return bot.answer_callback_query(c.id, "Неверный тариф.", show_alert=True)
-        if not create_platega_payment(c.from_user.id, code, t["price"], f"Подписка «{t['title']}»", "subscription", "sub"): safe_send(c.from_user.id, "⚠️ Оплата недоступна.")
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        kb.add(types.InlineKeyboardButton(f"✅ Подтвердить — {t['price']}₽", callback_data=f"subok_{code}"))
+        kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_sub"))
+        safe_edit(c.message.chat.id, c.message.message_id,
+                  f"🛒 <b>Подтверждение подписки</b>\n\n"
+                  f"Тариф: <b>{t['title']}</b>\n"
+                  f"Лимит: <b>{t['limit']} генераций / {t['days']} дней</b>\n"
+                  f"Сумма: <b>{t['price']}₽</b>\n\n"
+                  f"Возврат — /refund в течение {REFUND_WINDOW_HOURS} ч. (пропорционально остатку дней).",
+                  reply_markup=kb, parse_mode="HTML")
+
+    @bot.callback_query_handler(func=lambda c: c.data.startswith("subok_"))
+    def cb_sub_ok(c):
+        bot.answer_callback_query(c.id)
+        code = c.data[6:]; t = SUB_TARIFFS.get(code)
+        if not t: return bot.answer_callback_query(c.id, "Неверный тариф.", show_alert=True)
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.add(types.InlineKeyboardButton("💳 СБП (Карта)", callback_data=f"subrub_{code}"),
+               types.InlineKeyboardButton("⭐ Telegram Stars", callback_data=f"substars_{code}"))
+        kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data=f"sub_{code}"))
+        safe_edit(c.message.chat.id, c.message.message_id,
+                  f"Выбери способ оплаты для «{t['title']}» ({t['price']}₽):",
+                  reply_markup=kb)
+
+    @bot.callback_query_handler(func=lambda c: c.data.startswith("subrub_"))
+    def cb_sub_rub(c):
+        bot.answer_callback_query(c.id)
+        code = c.data[7:]; t = SUB_TARIFFS.get(code)
+        if not t: return bot.answer_callback_query(c.id, "Неверный тариф.", show_alert=True)
+        idem = f"platega:{c.from_user.id}:{code}:{uuid.uuid4().hex[:8]}"
+        if not create_platega_payment(c.from_user.id, code, t["price"], f"Подписка «{t['title']}»", "subscription", "sub", idem):
+            safe_send(c.from_user.id, "⚠️ Оплата СБП временно недоступна. Попробуй Stars или поддержку.")
+
+    @bot.callback_query_handler(func=lambda c: c.data.startswith("substars_"))
+    def cb_sub_stars(c):
+        bot.answer_callback_query(c.id)
+        code = c.data[9:]; t = SUB_TARIFFS.get(code)
+        if not t: return bot.answer_callback_query(c.id, "Неверный тариф.", show_alert=True)
+        if not create_stars_invoice(c.from_user.id, code, t["price"], f"Подписка «{t['title']}»", "subscription"):
+            safe_send(c.from_user.id, "⚠️ Ошибка при создании счета Stars. Попробуй СБП.")
+
+    # ---------- Stars: pre_checkout сверяет сумму ----------
+    @bot.pre_checkout_query_handler(func=lambda query: True)
+    def process_pre_checkout_query(pre_checkout_query):
+        payload = pre_checkout_query.invoice_payload
+        with DbConn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT status, stars_amount FROM payments WHERE invoice_payload=? AND provider='stars'", (payload,))
+            r = cur.fetchone()
+        if not r:
+            return bot.answer_pre_checkout_query(pre_checkout_query.id, ok=False,
+                                                 error_message="Счёт не найден. Открой /start → Купить заново.")
+        status, expected_stars = r
+        if status != "PENDING":
+            return bot.answer_pre_checkout_query(pre_checkout_query.id, ok=False,
+                                                 error_message="Счёт уже оплачен. Открой /start → Купить заново.")
+        try: total = int(pre_checkout_query.total_amount)
+        except Exception: total = -1
+        if total != int(expected_stars):
+            log.warning(f"pre_checkout amount mismatch: got={total} expected={expected_stars} payload={payload}")
+            return bot.answer_pre_checkout_query(pre_checkout_query.id, ok=False,
+                                                 error_message=f"Сумма не совпадает. Ожидалось {expected_stars}⭐, получено {total}. Обратись в поддержку.")
+        if (pre_checkout_query.currency or "").upper() != "XTR":
+            return bot.answer_pre_checkout_query(pre_checkout_query.id, ok=False,
+                                                 error_message="Валюта должна быть XTR.")
+        bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+
+    @bot.message_handler(content_types=['successful_payment'])
+    def got_payment(message):
+        sp = message.successful_payment
+        payload = sp.invoice_payload or ""
+        uid = message.from_user.id
+        try:
+            charge_id = sp.telegram_payment_charge_id or ""
+            total = int(sp.total_amount)
+            currency = sp.currency or ""
+        except Exception:
+            log.exception("successful_payment parse")
+            return
+        ok, reason = apply_payment_atomic_stars(payload, charge_id, total, currency)
+        if not ok:
+            log.warning(f"stars_payment rejected uid={uid} payload={payload} reason={reason}")
+            refunded = False
+            if reason in ("amount_mismatch", "currency_mismatch", "exception") and charge_id:
+                refunded = refund_stars(uid, charge_id)
+            if refunded:
+                safe_send(uid, f"⚠️ Платёж не применён ({reason}), средства возвращены автоматически.")
+            else:
+                safe_send(uid, f"⚠️ Платёж получен, но не применён ({reason}). Напиши в поддержку: {SUPPORT_URL}\n"
+                               f"Укажи payload: {payload}")
+            notify(ADMIN_ID, f"⚠️ STARS PAYMENT NOT APPLIED\nuser={uid}\npayload={payload}\nreason={reason}\ncharge={charge_id}\nrefunded={refunded}")
 
     # ---------- Админка ----------
     def admin_only(func):
@@ -1154,7 +1620,7 @@ def register_handlers():
     def cb_admin_find(c):
         bot.answer_callback_query(c.id)
         upd(ADMIN_ID, admin_state="find_user", admin_target=0, admin_ts=time.time())
-        safe_send(c.message.chat.id, "Введи <b>ID юзера</b> (только цифры), которого нужно найти или создать:", parse_mode="HTML")
+        safe_send(c.message.chat.id, "Введи <b>ID юзера</b> (только цифры):", parse_mode="HTML")
 
     @bot.callback_query_handler(func=lambda c: c.data == "admin_dash")
     @admin_only
@@ -1166,7 +1632,11 @@ def register_handlers():
             cur.execute("SELECT COUNT(*) FROM users WHERE sub_until > ?", (time.time(),)); subs = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM payments WHERE status='PAID'"); paid = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM transactions WHERE status='PENDING'"); pending_tx = cur.fetchone()[0]
-        txt = (f"📊 <b>Дашборд</b>\n\n👥 Юзеров: {users}\n🎨 Генераций: {gens}\n🎫 Подписок: {subs}\n💳 Оплат: {paid}\n⏳ PENDING транзакций: {pending_tx}\n\nОплата: {'✅' if setting('payments_on')=='1' else '🛑'}\nГенерации: {'✅' if setting('generations_on')=='1' else '🛑'}")
+            cur.execute("SELECT COUNT(*) FROM payments WHERE status='PENDING' AND provider='stars'"); pending_stars = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM payments WHERE status='EXPIRED'"); expired = cur.fetchone()[0]
+        txt = (f"📊 <b>Дашборд</b>\n\n👥 Юзеров: {users}\n🎨 Генераций: {gens}\n🎫 Подписок: {subs}\n💳 Оплат: {paid}\n"
+               f"⏳ PENDING tx: {pending_tx}\n⭐ PENDING Stars: {pending_stars}\n⌛ EXPIRED: {expired}\n\n"
+               f"Оплата: {'✅' if setting('payments_on')=='1' else '🛑'}\nГенерации: {'✅' if setting('generations_on')=='1' else '🛑'}")
         kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("⬅️ Назад", callback_data="admin_root"))
         safe_edit(c.message.chat.id, c.message.message_id, txt, reply_markup=kb, parse_mode="HTML")
 
@@ -1187,8 +1657,8 @@ def register_handlers():
     def cb_admin_pays(c):
         bot.answer_callback_query(c.id)
         with DbConn() as db_c:
-            cur = db_c.cursor(); cur.execute("SELECT user_id,package_id,amount,status,ts FROM payments ORDER BY id DESC LIMIT ?", (ADMIN_PAGE,)); rows = cur.fetchall()
-        txt = "💳 <b>Платежи</b>\n\n" + ("\n".join([f"• {u} | {p} | {a}₽ | {s} | {datetime.fromtimestamp(t):%d.%m %H:%M}" for u,p,a,s,t in rows]) if rows else "Пусто")
+            cur = db_c.cursor(); cur.execute("SELECT user_id,package_id,amount,status,provider,ts FROM payments ORDER BY id DESC LIMIT ?", (ADMIN_PAGE,)); rows = cur.fetchall()
+        txt = "💳 <b>Платежи</b>\n\n" + ("\n".join([f"• {u} | {p} | {a}₽ | {s} | {pr} | {datetime.fromtimestamp(t):%d.%m %H:%M}" for u,p,a,s,pr,t in rows]) if rows else "Пусто")
         kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("⬅️ Назад", callback_data="admin_root"))
         safe_edit(c.message.chat.id, c.message.message_id, txt[:TG_MSG_CHUNK], reply_markup=kb, parse_mode="HTML")
 
@@ -1323,7 +1793,7 @@ def _gen_impl(uid: int, message, mid: str, m_type: str, price: int, is_admin: bo
         try:
             r = requests.post(f"{POLZA_BASE}/audio/transcriptions", headers=headers, files=files, data={"model": mid}, timeout=HTTP_TIMEOUT_LONG)
             if r.status_code == 200: text = r.json().get("text")
-        except Exception: pass
+        except Exception: log.exception("stt")
         try: bot.delete_message(uid, status.message_id)
         except Exception: pass
         if not text: Finance.refund(tx_id, "stt_failed"); return safe_send(uid, "❌ Ошибка. Средства возвращены.")
@@ -1385,14 +1855,19 @@ def _gen_impl(uid: int, message, mid: str, m_type: str, price: int, is_admin: bo
         kind = {"image":"photo","tts":"voice","audio":"audio","video":"video","animate":"video"}.get(m_type, "document")
         with open(tmp, "rb") as f: sent = safe_send_media(uid, kind, f, caption="✅ Готово")
 
-        if sent:
-            try:
-                fid = ""
-                for attr in ("photo","voice","audio","video","document"):
-                    obj = getattr(sent, attr, None)
-                    if obj: fid = obj[-1].file_id if attr == "photo" else obj.file_id; break
-                add_work(uid, m_type, mid, prompt, fid)
-            except Exception: pass
+        # Пункт 1: если не отправилось — рефанд и выход
+        if not sent:
+            log.warning(f"gen {uid}: media not sent, refunding")
+            Finance.refund(tx_id, "send_media_failed")
+            return
+
+        try:
+            fid = ""
+            for attr in ("photo","voice","audio","video","document"):
+                obj = getattr(sent, attr, None)
+                if obj: fid = obj[-1].file_id if attr == "photo" else obj.file_id; break
+            add_work(uid, m_type, mid, prompt, fid)
+        except Exception: log.exception("add_work")
 
         Finance.ok(tx_id); incr_generated(uid); log_ev(uid, "gen_done", m_type)
 
@@ -1467,9 +1942,16 @@ def main():
 
     if MODERATION_REQUIRED and not MODERATION_API_URL: raise SystemExit("MODERATION_REQUIRED=1, но MODERATION_API_URL пуст")
 
+    if TERMS_REQUIRED and not (TERMS_URL and PRIVACY_URL):
+        raise SystemExit("TERMS_REQUIRED=1, но TERMS_URL/PRIVACY_URL пусты")
+
     os.makedirs(DATA_DIR, exist_ok=True)
     Db.init(os.path.join(DATA_DIR, "media_bot.db"), DB_POOL_SIZE)
     init_db()
+
+    # Пункт 20: вызываем после инициализации БД
+    if setting("payments_on", "1") == "1" and (PLATEGA_ID and PLATEGA_SECRET) and not RETURN_URL:
+        log.warning("RETURN_URL пуст, но Platega настроена — пользователь после оплаты останется без редиректа. Задай RETURN_URL.")
 
     GEN_EXECUTOR   = ThreadPoolExecutor(max_workers=EXECUTOR_WORKERS, thread_name_prefix="gen")
     PAY_EXECUTOR   = ThreadPoolExecutor(max_workers=4, thread_name_prefix="pay")
@@ -1495,7 +1977,7 @@ def main():
     threading.Thread(target=payment_poller_single_loop, daemon=True, name="payment_poller").start()
     if HEALTH_PORT > 0: start_health_server(HEALTH_PORT)
 
-    log.info(f"🚀 Neuro Studio v37 started (workers={EXECUTOR_WORKERS}, queue_max={EXECUTOR_QUEUE_MAX}, db_pool={DB_POOL_SIZE})")
+    log.info(f"🚀 Neuro Studio v41 started (workers={EXECUTOR_WORKERS}, queue_max={EXECUTOR_QUEUE_MAX}, db_pool={DB_POOL_SIZE}, stars_rate={STARS_RUB_PER_STAR}₽/star, poll_interval={PAYMENT_POLL_INTERVAL}s, poll_timeout={PAYMENT_POLL_TIMEOUT}s, stars_auto_refund={STARS_AUTO_REFUND})")
     try: bot.infinity_polling(timeout=10, long_polling_timeout=5)
     except KeyboardInterrupt: log.warning("stopped by KeyboardInterrupt")
     finally:
