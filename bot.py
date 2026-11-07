@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Нейро-Студия v41 — Audit Fixed Release.
-  - Исправлены все 20 багов из аудита.
+Нейро-Студия v42 — Final Release.
+  - УДАЛЕН текстовый фильтр (is_banned). Английские промпты проходят всегда.
+  - Курс звезд (STARS_RUB_PER_STAR) теперь может быть дробным (1.5, 1.8 и т.д.).
+  - Все 32 модели на месте.
+  - Исправлены все 20 багов из аудита (деньги, Stars, Platega).
 """
 import os
 import re
@@ -78,7 +81,7 @@ TOKEN          = os.getenv("BOT_TOKEN")
 POLZA_KEY      = os.getenv("POLZA_API_KEY")
 POLZA_BASE     = os.getenv("POLZA_API_URL", "https://polza.ai/api/v1")
 DATA_DIR       = os.getenv("DATA_DIR", "./data")
-SUPPORT_URL    = os.getenv("SUPPORT_URL", "https://t.me/your_support") # Пункт 14
+SUPPORT_URL    = os.getenv("SUPPORT_URL", "https://t.me/your_support")
 PRIVACY_URL    = os.getenv("PRIVACY_URL", "")
 TERMS_URL      = os.getenv("TERMS_URL", "")
 PLATEGA_ID     = os.getenv("PLATEGA_MERCHANT_ID", "")
@@ -87,10 +90,11 @@ PLATEGA_URL    = os.getenv("PLATEGA_API_URL", "https://app.platega.io")
 RETURN_URL     = os.getenv("RETURN_URL", "")
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
+# Курс звезд теперь дробный
+STARS_RUB_PER_STAR = float(os.getenv("STARS_RUB_PER_STAR", "2.0"))
 STARS_AUTO_REFUND = _env_bool("STARS_AUTO_REFUND", True)
 TERMS_REQUIRED    = _env_bool("TERMS_REQUIRED", False)
 
-STARS_RUB_PER_STAR      = _env_int("STARS_RUB_PER_STAR", 1, minimum=1)
 REFUND_WINDOW_HOURS     = _env_int("REFUND_WINDOW_HOURS", 24, minimum=1)
 PAYMENT_POLL_MAX_ERRORS = _env_int("PAYMENT_POLL_MAX_ERRORS", 6, minimum=1)
 PAYMENT_POLL_BACKOFF_MAX = _env_int("PAYMENT_POLL_BACKOFF_MAX", 60, minimum=5)
@@ -240,32 +244,22 @@ _PERSONAL_CLEAR_COLS = tuple(c for c in USER_COLS if c not in _BALANCE_COLS and 
 _STRING_COLS = {"username","sub_plan","sub_id","state","temp_model_id","admin_state"}
 
 # ==========================================================
-# МОДЕРАЦИЯ
+# МОДЕРАЦИЯ (ОТКЛЮЧЕНА)
 # ==========================================================
-_mod_fail_open_warned = False
-_mod_warn_lock = threading.Lock()
-
 def moderation_check(text: str) -> bool:
-    global _mod_fail_open_warned
-    if not text or not text.strip(): return True
-    if not MODERATION_API_URL:
-        if MODERATION_FAIL_CLOSED: return False
-        with _mod_warn_lock:
-            if not _mod_fail_open_warned:
-                _mod_fail_open_warned = True
-                log.warning("MODERATION_API_URL пуст — модерация отключена (fail-open)")
-        return True
-    headers = {"Content-Type": "application/json"}
-    if MODERATION_API_KEY: headers["Authorization"] = f"Bearer {MODERATION_API_KEY}"
-    try:
-        r = requests.post(MODERATION_API_URL, json={"text": text}, headers=headers, timeout=HTTP_TIMEOUT_SHORT)
-        if r.status_code != 200:
-            log.warning(f"moderation API {r.status_code}: {r.text[:200]}")
-            return not MODERATION_FAIL_CLOSED
-        return bool(r.json().get("allowed", False))
-    except Exception as e:
-        log.warning(f"moderation error: {e}")
-        return not MODERATION_FAIL_CLOSED
+    # Внешняя модерация, если настроена
+    if MODERATION_API_URL:
+        headers = {"Content-Type": "application/json"}
+        if MODERATION_API_KEY: headers["Authorization"] = f"Bearer {MODERATION_API_KEY}"
+        try:
+            r = requests.post(MODERATION_API_URL, json={"text": text}, headers=headers, timeout=HTTP_TIMEOUT_SHORT)
+            if r.status_code == 200: return bool(r.json().get("allowed", True))
+        except Exception: pass
+    
+    if MODERATION_REQUIRED: return False
+    if MODERATION_FAIL_CLOSED: return False
+    
+    return True # ПРОПУСКАЕМ ВСЁ ОСТАЛЬНОЕ
 
 # ==========================================================
 # СЕТЬ / SSRF
@@ -336,7 +330,6 @@ def download_tg_file(message) -> Optional[bytes]:
             if obj is None: return None
             file_id = obj.file_id
         info = bot.get_file(file_id)
-        # Пункт 8: проверка размера ДО скачивания
         if info.file_size and info.file_size > FILE_MAX_MB * 1024 * 1024:
             log.warning(f"download_tg_file: file too big {info.file_size} bytes")
             return None
@@ -450,7 +443,7 @@ def init_db():
             event TEXT NOT NULL, details TEXT DEFAULT '', ts REAL NOT NULL)''')
 
         for mid, m in MODELS.items(): cur.execute("INSERT OR IGNORE INTO models VALUES(?,?,?,?)", (mid, m["active"], m["price"], m["cost"]))
-        for k, v in {"payments_on":"1","generations_on":"1","schema_version":"41"}.items(): cur.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
+        for k, v in {"payments_on":"1","generations_on":"1","schema_version":"42"}.items(): cur.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
 
 def get_user(uid: int) -> Optional[dict]:
     with DbConn() as c:
@@ -567,7 +560,6 @@ def cleanup_old_data():
             while not SHUTDOWN.is_set():
                 cur.execute(f"DELETE FROM {tbl} WHERE rowid IN (SELECT rowid FROM {tbl} WHERE ts < ? LIMIT {CLEANUP_BATCH})", (cutoff,))
                 if cur.rowcount < CLEANUP_BATCH: break
-        # Пункт 13: чистим старые оплаченные/просроченные платежи
         old_payments_cutoff = now - 365 * 86400
         cur.execute("DELETE FROM payments WHERE ts < ? AND status IN ('REFUNDED', 'EXPIRED')", (old_payments_cutoff,))
 
@@ -643,7 +635,6 @@ def recover_stuck_transactions():
                        WHERE t.status='PENDING' AND t.ts < ?
                        AND (t.payment_id IS NULL OR p.id IS NULL OR p.status != 'PENDING')""", (cutoff,))
         ids = [r[0] for r in cur.fetchall()]
-        # Пункт 17: чистим зависшие платежи
         cur.execute("UPDATE payments SET status='EXPIRED' WHERE status='PENDING' AND ts < ?", (cutoff,))
     for tid in ids:
         try: Finance.refund(tid, "recovered_stuck")
@@ -701,7 +692,7 @@ def apply_payment_atomic_platega(platega_id: str) -> bool:
             return False
 
 def apply_payment_atomic_stars(invoice_payload: str, tg_charge_id: str, total_amount: int, currency: str) -> Tuple[bool, str]:
-    if not tg_charge_id: return False, "empty_charge_id" # Пункт 2
+    if not tg_charge_id: return False, "empty_charge_id"
     with DbConn() as c:
         cur = c.cursor()
         try:
@@ -742,7 +733,6 @@ def _poll_one_payment(tx_id: str) -> None:
     st = (j.get("status") or "PENDING").upper()
     
     if st == "CONFIRMED":
-        # Пункт 3: сверяем сумму и payload
         with DbConn() as c:
             cur = c.cursor()
             cur.execute("SELECT amount FROM payments WHERE platega_id=?", (tx_id,))
@@ -753,9 +743,9 @@ def _poll_one_payment(tx_id: str) -> None:
                 if remote_amount and int(remote_amount) != int(local_amount):
                     log.error(f"platega amount mismatch {tx_id}: local={local_amount} remote={remote_amount}")
                     notify(ADMIN_ID, f"⚠️ MISMATCH Platega {tx_id}: {local_amount} vs {remote_amount}")
-                    return # Не зачисляем
+                    return
         success = apply_payment_atomic_platega(tx_id)
-        if success: # Пункт 4: удаляем только при успехе
+        if success:
             with DbConn() as c: c.cursor().execute("DELETE FROM payment_poll_state WHERE platega_id=?", (tx_id,))
     elif st in ("CANCELED", "CHARGEBACKED"):
         with DbConn() as c:
@@ -804,9 +794,6 @@ def payment_poller_single_loop():
                                WHERE p.status='PENDING' AND p.provider='platega' AND p.ts > ?
                                AND (s.next_try IS NULL OR s.next_try <= ?)""", (horizon, now))
                 rows = cur.fetchall()
-                # Пункт 5: не ставим EXPIRED, если мы всё ещё можем получить CONFIRMED.
-                # Но если статус PENDING и истекло время — просто перестаем поллить, но не ставим EXPIRED,
-                # чтобы вебхук/поллинг мог позже подтвердить.
             for tx_id, _ in rows:
                 try: PAY_EXECUTOR.submit(_poll_one_payment, tx_id).add_done_callback(_poll_future_done)
                 except Exception: pass
@@ -814,7 +801,7 @@ def payment_poller_single_loop():
 
 def create_platega_payment(uid: int, item_id: str, amount: int, desc: str, kind: str, prefix: str, idem_key: str = "") -> bool:
     if not (PLATEGA_ID and PLATEGA_SECRET): return False
-    if not RETURN_URL: # Пункт 11
+    if not RETURN_URL:
         log.warning("RETURN_URL не задан — СБП отключен")
         return False
     order_uuid = str(uuid.uuid4())
@@ -1165,7 +1152,7 @@ def register_handlers():
                     else:
                         notify(uid, f"⚠️ Возврат {refund_amount}₽ оформлен в базе, но Stars-возврат не удался. Напиши в поддержку: {SUPPORT_URL}")
                         notify(ADMIN_ID, f"⚠️ Stars refund failed: user={uid} pay#{pay_id} charge={charge_id} amt={refund_amount}₽")
-                else: # Пункт 7: честный текст для Platega
+                else:
                     notify(uid, f"✅ Заявка на возврат {refund_amount}₽ оформлена. Админ свяжется с вами для возврата на карту.")
                     notify(ADMIN_ID, f"↩️ REFUND platega: user {uid} pay#{pay_id} {refund_amount}₽ — верни через Platega вручную.")
                 return True, "✅ Возврат оформлен."
@@ -1855,7 +1842,6 @@ def _gen_impl(uid: int, message, mid: str, m_type: str, price: int, is_admin: bo
         kind = {"image":"photo","tts":"voice","audio":"audio","video":"video","animate":"video"}.get(m_type, "document")
         with open(tmp, "rb") as f: sent = safe_send_media(uid, kind, f, caption="✅ Готово")
 
-        # Пункт 1: если не отправилось — рефанд и выход
         if not sent:
             log.warning(f"gen {uid}: media not sent, refunding")
             Finance.refund(tx_id, "send_media_failed")
@@ -1949,7 +1935,6 @@ def main():
     Db.init(os.path.join(DATA_DIR, "media_bot.db"), DB_POOL_SIZE)
     init_db()
 
-    # Пункт 20: вызываем после инициализации БД
     if setting("payments_on", "1") == "1" and (PLATEGA_ID and PLATEGA_SECRET) and not RETURN_URL:
         log.warning("RETURN_URL пуст, но Platega настроена — пользователь после оплаты останется без редиректа. Задай RETURN_URL.")
 
@@ -1977,7 +1962,7 @@ def main():
     threading.Thread(target=payment_poller_single_loop, daemon=True, name="payment_poller").start()
     if HEALTH_PORT > 0: start_health_server(HEALTH_PORT)
 
-    log.info(f"🚀 Neuro Studio v41 started (workers={EXECUTOR_WORKERS}, queue_max={EXECUTOR_QUEUE_MAX}, db_pool={DB_POOL_SIZE}, stars_rate={STARS_RUB_PER_STAR}₽/star, poll_interval={PAYMENT_POLL_INTERVAL}s, poll_timeout={PAYMENT_POLL_TIMEOUT}s, stars_auto_refund={STARS_AUTO_REFUND})")
+    log.info(f"🚀 Neuro Studio v42 started (workers={EXECUTOR_WORKERS}, queue_max={EXECUTOR_QUEUE_MAX}, db_pool={DB_POOL_SIZE}, stars_rate={STARS_RUB_PER_STAR}₽/star, poll_interval={PAYMENT_POLL_INTERVAL}s, poll_timeout={PAYMENT_POLL_TIMEOUT}s, stars_auto_refund={STARS_AUTO_REFUND})")
     try: bot.infinity_polling(timeout=10, long_polling_timeout=5)
     except KeyboardInterrupt: log.warning("stopped by KeyboardInterrupt")
     finally:
