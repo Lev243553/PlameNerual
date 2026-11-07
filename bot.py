@@ -90,7 +90,7 @@ OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
 STARS_AUTO_REFUND = _env_bool("STARS_AUTO_REFUND", True)
 TERMS_REQUIRED    = _env_bool("TERMS_REQUIRED", False)
 
-STARS_RUB_PER_STAR      = _env_int("STARS_RUB_PER_STAR", 2, minimum=1)
+STARS_RUB_PER_STAR      = _env_int("STARS_RUB_PER_STAR", 1.5, minimum=1)
 REFUND_WINDOW_HOURS     = _env_int("REFUND_WINDOW_HOURS", 24, minimum=1)
 PAYMENT_POLL_MAX_ERRORS = _env_int("PAYMENT_POLL_MAX_ERRORS", 6, minimum=1)
 PAYMENT_POLL_BACKOFF_MAX = _env_int("PAYMENT_POLL_BACKOFF_MAX", 60, minimum=5)
