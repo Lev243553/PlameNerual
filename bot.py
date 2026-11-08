@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Нейро-Студия v52 — CLODEx & SprutDock Fix Release.
-  - Исправлен формат запросов для картинок CLODEx/SprutDock (prompt в корне).
-  - Добавлена поддержка ответов в виде Base64 (если API возвращает не ссылку, а код).
-  - Оставлены все фиксы из v51 (таймауты, UI, админка).
+Нейро-Студия v56 — Ultimate Multi-Provider & Grosh Release.
+  - Все нейросети (Polza, CLODEx, SprutDock, Ranvik, OpenRouter).
+  - Управление провайдерами целиком в админке.
+  - GroshWallet с правильным форматом (pay.grosh.me/api).
 """
 import os
 import re
@@ -88,14 +88,17 @@ PLATEGA_SECRET = os.getenv("PLATEGA_SECRET_KEY", "")
 PLATEGA_URL    = os.getenv("PLATEGA_API_URL", "https://app.platega.io")
 RETURN_URL     = os.getenv("RETURN_URL", "")
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
+
 RANVIK_API_KEY = os.getenv("RANVIK_API_KEY", "")
 RANVIK_API_URL = os.getenv("RANVIK_API_URL", "https://api.ranvik.ru/v1")
 TEXT_API_KEY   = os.getenv("TEXT_API_KEY", "")
 TEXT_API_URL   = os.getenv("TEXT_API_URL", "https://sprutdock.ru/v1")
-
-# Провайдер CLODEx
 CLODEX_API_KEY = os.getenv("CLODEX_API_KEY", "")
 CLODEX_API_URL = os.getenv("CLODEX_API_URL", "https://api.clodex.xyz/v1")
+
+# GROSH WALLET
+GROSH_API_KEY  = os.getenv("GROSH_API_KEY", "")
+GROSH_API_URL  = os.getenv("GROSH_API_URL", "https://pay.grosh.me/api")
 
 STARS_RUB_PER_STAR = float(os.getenv("STARS_RUB_PER_STAR", "2.0"))
 STARS_AUTO_REFUND = _env_bool("STARS_AUTO_REFUND", True)
@@ -167,7 +170,6 @@ BOT_USERNAME: str = ""
 ADMIN_ID: int = 0
 SHUTDOWN = threading.Event()
 
-# УМЕНЬШЕННЫЕ ТАЙМАУТЫ
 HTTP_TIMEOUT_SHORT = (5, 15)
 HTTP_TIMEOUT_MED   = (5, 30)
 HTTP_TIMEOUT_LONG  = (5, 30)
@@ -177,8 +179,7 @@ ALLOWED_CDN = {
     "openrouter.ai", "api.ranvik.ru", 
     "sprutdock.ru", "storage.sprutdock.ru", "cdn.sprutdock.ru",
     "clodex.xyz", "api.clodex.xyz", "cdn.clodex.xyz", "storage.clodex.xyz",
-    "oaidalleapiprodscus.blob.core.windows.net", # Если картинки от OpenAI
-    "replicate.delivery", "pbxt.replicate.delivery" # Если от Replicate
+    "grosh.me", "pay.grosh.me"
 }
 
 _EXPECTED_CT = {
@@ -188,39 +189,39 @@ _EXPECTED_CT = {
 }
 
 MODELS = {
-    # --- POLZA (Изображения) ---
-    "openai/gpt-image-1.5":               {"name":"GPT Image 1.5",       "type":"image",  "price":7,  "cost":3.0,  "active":1},
-    "openai/gpt-5-image":                 {"name":"GPT-5 Image",         "type":"image",  "price":10, "cost":4.5,  "active":1},
-    "google/gemini-2.5-flash-image":      {"name":"Gemini 2.5 Flash",    "type":"image",  "price":6,  "cost":2.9,  "active":1},
-    "google/gemini-nano-banana-2.1":      {"name":"Nano Banana 2.1",     "type":"image",  "price":7,  "cost":3.0,  "active":1},
-    "google/gemini-3.1-flash-lite-image": {"name":"Gemini 3.1 Lite",     "type":"image",  "price":6,  "cost":2.9,  "active":1},
-    "black-forest-labs/flux.2-flex":      {"name":"Flux 2 Flex",         "type":"image",  "price":22, "cost":14.0, "active":1},
-    "bytedance/seedream-4":               {"name":"Seedream 4",          "type":"image",  "price":7,  "cost":3.0,  "active":1},
-    "bytedance/seedream-5-lite":          {"name":"Seedream 5 Lite",     "type":"image",  "price":8,  "cost":4.0,  "active":1},
-    "qwen/image":                         {"name":"Qwen Image",          "type":"image",  "price":5,  "cost":2.25, "active":1},
-    "qwen/image-2":                       {"name":"Qwen Image 2",        "type":"image",  "price":8,  "cost":4.0,  "active":1},
-    "qwen/image-2.1":                     {"name":"Qwen Image 2.1",      "type":"image",  "price":7,  "cost":3.0,  "active":1},
-    "tongyi-mai/z-image":                 {"name":"Z-Image",             "type":"image",  "price":5,  "cost":1.4,  "active":1},
-    "yandex/yandex-art":                  {"name":"Yandex Art",          "type":"image",  "price":6,  "cost":2.91, "active":1},
-    "grok-imagine-image-2-0/text-to-image":{"name":"Grok Image 2.0",     "type":"image",  "price":8,  "cost":3.0,  "active":1},
-    "x-ai/grok-image":                    {"name":"Grok Image",          "type":"image",  "price":6,  "cost":2.5,  "active":1},
+    # POLZA
+    "openai/gpt-image-1.5":               {"name":"GPT Image 1.5",       "type":"image",  "price":7,  "cost":3.0,  "active":1, "provider":"polza"},
+    "openai/gpt-5-image":                 {"name":"GPT-5 Image",         "type":"image",  "price":10, "cost":4.5,  "active":1, "provider":"polza"},
+    "google/gemini-2.5-flash-image":      {"name":"Gemini 2.5 Flash",    "type":"image",  "price":6,  "cost":2.9,  "active":1, "provider":"polza"},
+    "google/gemini-nano-banana-2.1":      {"name":"Nano Banana 2.1",     "type":"image",  "price":7,  "cost":3.0,  "active":1, "provider":"polza"},
+    "google/gemini-3.1-flash-lite-image": {"name":"Gemini 3.1 Lite",     "type":"image",  "price":6,  "cost":2.9,  "active":1, "provider":"polza"},
+    "black-forest-labs/flux.2-flex":      {"name":"Flux 2 Flex",         "type":"image",  "price":22, "cost":14.0, "active":1, "provider":"polza"},
+    "bytedance/seedream-4":               {"name":"Seedream 4",          "type":"image",  "price":7,  "cost":3.0,  "active":1, "provider":"polza"},
+    "bytedance/seedream-5-lite":          {"name":"Seedream 5 Lite",     "type":"image",  "price":8,  "cost":4.0,  "active":1, "provider":"polza"},
+    "qwen/image":                         {"name":"Qwen Image",          "type":"image",  "price":5,  "cost":2.25, "active":1, "provider":"polza"},
+    "qwen/image-2":                       {"name":"Qwen Image 2",        "type":"image",  "price":8,  "cost":4.0,  "active":1, "provider":"polza"},
+    "qwen/image-2.1":                     {"name":"Qwen Image 2.1",      "type":"image",  "price":7,  "cost":3.0,  "active":1, "provider":"polza"},
+    "tongyi-mai/z-image":                 {"name":"Z-Image",             "type":"image",  "price":5,  "cost":1.4,  "active":1, "provider":"polza"},
+    "yandex/yandex-art":                  {"name":"Yandex Art",          "type":"image",  "price":6,  "cost":2.91, "active":1, "provider":"polza"},
+    "grok-imagine-image-2-0/text-to-image":{"name":"Grok Image 2.0",     "type":"image",  "price":8,  "cost":3.0,  "active":1, "provider":"polza"},
+    "x-ai/grok-image":                    {"name":"Grok Image",          "type":"image",  "price":6,  "cost":2.5,  "active":1, "provider":"polza"},
     
-    "google/lyria-3-pro-preview":         {"name":"Lyria 3 Pro",         "type":"audio",  "price":20, "cost":10.0, "active":1},
-    "google/lyria-3-clip-preview":        {"name":"Lyria 3 Clip",        "type":"audio",  "price":12, "cost":6.0,  "active":1},
-    "suno/sounds":                        {"name":"Suno Sounds",         "type":"audio",  "price":8,  "cost":4.0,  "active":1},
-    "grok-imagine-video-1-5":             {"name":"Grok Imagine Video",  "type":"video",  "price":5,  "cost":2.0,  "active":1},
-    "bytedance/seedance-2-mini":          {"name":"Seedance 2 Mini",     "type":"video",  "price":7,  "cost":3.0,  "active":1},
-    "google/gemini-3.1-flash-tts-preview":{"name":"Gemini 3.1 TTS",      "type":"tts",    "price":30, "cost":14.0, "active":1},
-    "google/gemini-3.8-flash-lite-tts":   {"name":"Gemini 3.8 TTS",      "type":"tts",    "price":15, "cost":7.0,  "active":1},
-    "openai/whisper-1":                   {"name":"Whisper 1",           "type":"stt",    "price":5,  "cost":0.43, "active":1},
-    "openai/gpt-4o-transcribe":           {"name":"GPT-4o Transcribe",   "type":"stt",    "price":5,  "cost":0.70, "active":1},
-    "bytedance/seedream-4.5":             {"name":"Seedream 4.5 Edit",   "type":"edit",   "price":8,  "cost":4.0,  "active":1},
-    "bytedance/seedance-2":               {"name":"Seedance 2 (Оживл.)", "type":"animate","price":15, "cost":7.0,  "active":1},
-    "kling/v2.6-motion-control":          {"name":"Kling Motion",        "type":"animate","price":20, "cost":10.0, "active":1},
-    "topaz/video-upscale":                {"name":"Topaz Video Upscale", "type":"upscale","price":12, "cost":6.0,  "active":1},
-    "topaz/image-upscale":                {"name":"Topaz Image Upscale", "type":"upscale","price":5,  "cost":2.0,  "active":1},
+    "google/lyria-3-pro-preview":         {"name":"Lyria 3 Pro",         "type":"audio",  "price":20, "cost":10.0, "active":1, "provider":"polza"},
+    "google/lyria-3-clip-preview":        {"name":"Lyria 3 Clip",        "type":"audio",  "price":12, "cost":6.0,  "active":1, "provider":"polza"},
+    "suno/sounds":                        {"name":"Suno Sounds",         "type":"audio",  "price":8,  "cost":4.0,  "active":1, "provider":"polza"},
+    "grok-imagine-video-1-5":             {"name":"Grok Imagine Video",  "type":"video",  "price":5,  "cost":2.0,  "active":1, "provider":"polza"},
+    "bytedance/seedance-2-mini":          {"name":"Seedance 2 Mini",     "type":"video",  "price":7,  "cost":3.0,  "active":1, "provider":"polza"},
+    "google/gemini-3.1-flash-tts-preview":{"name":"Gemini 3.1 TTS",      "type":"tts",    "price":30, "cost":14.0, "active":1, "provider":"polza"},
+    "google/gemini-3.8-flash-lite-tts":   {"name":"Gemini 3.8 TTS",      "type":"tts",    "price":15, "cost":7.0,  "active":1, "provider":"polza"},
+    "openai/whisper-1":                   {"name":"Whisper 1",           "type":"stt",    "price":5,  "cost":0.43, "active":1, "provider":"polza"},
+    "openai/gpt-4o-transcribe":           {"name":"GPT-4o Transcribe",   "type":"stt",    "price":5,  "cost":0.70, "active":1, "provider":"polza"},
+    "bytedance/seedream-4.5":             {"name":"Seedream 4.5 Edit",   "type":"edit",   "price":8,  "cost":4.0,  "active":1, "provider":"polza"},
+    "bytedance/seedance-2":               {"name":"Seedance 2 (Оживл.)", "type":"animate","price":15, "cost":7.0,  "active":1, "provider":"polza"},
+    "kling/v2.6-motion-control":          {"name":"Kling Motion",        "type":"animate","price":20, "cost":10.0, "active":1, "provider":"polza"},
+    "topaz/video-upscale":                {"name":"Topaz Video Upscale", "type":"upscale","price":12, "cost":6.0,  "active":1, "provider":"polza"},
+    "topaz/image-upscale":                {"name":"Topaz Image Upscale", "type":"upscale","price":5,  "cost":2.0,  "active":1, "provider":"polza"},
 
-    # --- CLODEX (Текстовые и Картинки) ---
+    # CLODEX
     "gpt-6-astra":                        {"name":"GPT-6 Astra (CX)",    "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"clodex"},
     "gpt-6.1-sol":                        {"name":"GPT-6.1 Sol (CX)",    "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"clodex"},
     "gpt-6.1-terra":                      {"name":"GPT-6.1 Terra (CX)",  "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"clodex"},
@@ -241,19 +242,21 @@ MODELS = {
     "clodex-video/hailuo-2.3-fast":       {"name":"Hailuo 2.3 Fast (CX)", "type":"video",  "price":10, "cost":0.0,  "active":0, "provider":"clodex"},
     "clodex-video/gemini-omni-flash":     {"name":"Gemini Omni (CX)",     "type":"video",  "price":12, "cost":0.0,  "active":0, "provider":"clodex"},
 
-    # --- SPRUTDOCK (Скрытые) ---
+    # SPRUTDOCK
     "scaledown/summarize":                {"name":"ScaleDown Sum (S)",   "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"sprut"},
     "scaledown/extract":                  {"name":"ScaleDown Ext (S)",   "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"sprut"},
     "xingchen-agi/xing4.0-29b-a4b":       {"name":"XingChen 29B (S)",    "type":"text",   "price":0,  "cost":0.0,  "active":0, "provider":"sprut"},
     "recursive/flint-v1.0":               {"name":"Recursive Flint (S)", "type":"text",   "price":0,  "cost":0.0,  "active":0, "provider":"sprut"},
     "stealth/crouton-alpha":              {"name":"Crouton Alpha (S)",   "type":"text",   "price":0,  "cost":0.0,  "active":0, "provider":"sprut"},
+    "flux-schnell-sprut":                 {"name":"Flux Schnell (S)",    "type":"image",  "price":5,  "cost":0.0,  "active":0, "provider":"sprut"},
+    "flux-dev-sprut":                     {"name":"Flux Dev (S)",        "type":"image",  "price":5,  "cost":0.0,  "active":0, "provider":"sprut"},
 
-    # --- RANVIK (Скрытые, платные) ---
+    # RANVIK
     "openai/gpt-6-luna":                  {"name":"GPT-6 Luna (R)",      "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"ranvik"},
     "deepseek/deepseek-v4.1-flash":       {"name":"DeepSeek (R)",        "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"ranvik"},
     "anthropic/claude-haiku-5.5":         {"name":"Claude Haiku (R)",    "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"ranvik"},
 
-    # --- OPENROUTER (Бесплатные) ---
+    # OPENROUTER
     "nvidia/nemotron-3-ultra-550b-a55b:free": {"name":"Nemotron 3 Ultra", "type":"text", "price":0, "cost":0.0, "active":1, "provider":"openrouter"},
     "google/gemma-4-31b-it:free":         {"name":"Gemma 4 31B",        "type":"text",   "price":0, "cost":0.0, "active":1, "provider":"openrouter"},
 }
@@ -358,6 +361,7 @@ def _read_response(r, max_bytes: int, m_type: str) -> bytes:
     return bytes(buf)
 
 def fetch_media(url: str, max_bytes: int = FILE_MAX_MB * 1024 * 1024, m_type: str = "", _redirects: int = 0) -> bytes:
+    if not is_safe_url(url): raise RuntimeError("unsafe url")
     for attempt in range(2):
         try:
             with requests.get(url, timeout=(5, 15), allow_redirects=False, stream=True) as r:
@@ -495,7 +499,7 @@ def init_db():
         for mid, m in MODELS.items(): 
             cur.execute("INSERT OR IGNORE INTO models(model_id, active, price, cost, provider) VALUES(?,?,?,?,?)", 
                         (mid, m["active"], m["price"], m["cost"], m.get("provider", "polza")))
-        for k, v in {"payments_on":"1","generations_on":"1","schema_version":"52"}.items(): cur.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
+        for k, v in {"payments_on":"1","generations_on":"1","schema_version":"56"}.items(): cur.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
 
 def get_user(uid: int) -> Optional[dict]:
     with DbConn() as c:
@@ -770,6 +774,26 @@ def apply_payment_atomic_stars(invoice_payload: str, tg_charge_id: str, total_am
             log.exception(f"apply_payment_atomic_stars {invoice_payload}")
             return False, "exception"
 
+def apply_payment_atomic_grosh(tx_id: str) -> bool:
+    with DbConn() as c:
+        cur = c.cursor()
+        try:
+            cur.execute("BEGIN IMMEDIATE")
+            cur.execute("SELECT id, user_id, package_id, kind FROM payments WHERE platega_id=? AND provider='grosh' AND status='PENDING'", (tx_id,))
+            row = cur.fetchone()
+            if not row: cur.execute("ROLLBACK"); return False
+            pay_id, uid, pid, kind = row
+            cur.execute("UPDATE payments SET status='PAID' WHERE id=?", (pay_id,))
+            _apply_payment_tx(cur, kind, pid, uid, pay_id)
+            cur.execute("COMMIT")
+            payment_event("grosh", tx_id, "paid", f"pay#{pay_id}")
+            return True
+        except Exception:
+            try: cur.execute("ROLLBACK")
+            except Exception: pass
+            log.exception(f"apply_payment_atomic_grosh {tx_id}")
+            return False
+
 def check_payment_status(tx_id: str) -> dict:
     headers = {"X-MerchantId": PLATEGA_ID, "X-Secret": PLATEGA_SECRET}
     try:
@@ -854,6 +878,55 @@ def create_platega_payment(uid: int, item_id: str, amount: int, desc: str, kind:
         log_ev(uid, "payment_created", f"platega {kind}:{item_id} {tx_id}"); payment_event("platega", tx_id, "created", f"user={uid} {kind}:{item_id}")
         return True
     except Exception: log.exception(f"create_platega_payment {uid} {item_id}"); return False
+
+def create_grosh_payment(uid: int, item_id: str, amount: int, desc: str, kind: str, prefix: str, idem_key: str = "") -> bool:
+    if not GROSH_API_KEY or not GROSH_API_URL:
+        log.error("GROSH_API_KEY или GROSH_API_URL не заданы")
+        return False
+    
+    order_uuid = str(uuid.uuid4())
+    payload = {
+        "amount": float(amount),
+        "label": desc,
+        "payload": f"{uid}_{prefix}_{item_id}",
+        "webhook": f"{RETURN_URL}/webhook/grosh",
+        "success_url": RETURN_URL
+    }
+    headers = {
+        "Authorization": f"Bearer {GROSH_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    try:
+        r = requests.post(f"{GROSH_API_URL}/payments", json=payload, headers=headers, timeout=HTTP_TIMEOUT_SHORT)
+        if r.status_code not in (200, 201):
+            log.error(f"grosh error: {r.status_code} {r.text[:200]}")
+            return False
+            
+        j = r.json()
+        pay_url = j.get("url") or j.get("pay_url") or j.get("payment_url")
+        tx_id = j.get("id") or j.get("transaction_id") or order_uuid
+        
+        if not pay_url:
+            log.error(f"grosh response missing url: {j}")
+            return False
+            
+        with DbConn() as c:
+            cur = c.cursor()
+            try:
+                cur.execute("""INSERT INTO payments(user_id, package_id, amount, status, platega_id, ts, kind, provider, idempotency_key)
+                               VALUES(?,?,?,?,?,?,?, 'grosh', ?)""",
+                            (uid, item_id, amount, "PENDING", tx_id, time.time(), kind, idem_key or ""))
+            except sqlite3.IntegrityError:
+                log.warning(f"duplicate grosh tx {tx_id}")
+                return False
+                
+        kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("💳 Оплатить (Grosh)", url=pay_url))
+        notify(uid, f"💳 {desc} — {amount}₽\n\n🧾 Заказ: {tx_id}", reply_markup=kb.to_dict())
+        log_ev(uid, "payment_created", f"grosh {kind}:{item_id} {tx_id}")
+        return True
+    except Exception as e:
+        log.exception(f"create_grosh_payment {uid} {item_id}: {e}")
+        return False
 
 def create_stars_invoice(uid: int, item_id: str, amount_rub: int, desc: str, kind: str) -> bool:
     if amount_rub <= 0: return False
@@ -1113,7 +1186,7 @@ def register_handlers():
                 if provider == "stars" and charge_id:
                     if refund_stars(uid, charge_id): notify(uid, f"✅ Возврат {refund_amount}₽ (⭐ Stars) оформлен. Зачисление — в течение суток.")
                     else: notify(uid, f"⚠️ Возврат {refund_amount}₽ оформлен в базе, но Stars-возврат не удался. Напиши в поддержку: {SUPPORT_URL}"); notify(ADMIN_ID, f"⚠️ Stars refund failed: user={uid} pay#{pay_id} charge={charge_id} amt={refund_amount}₽")
-                else: notify(uid, f"✅ Заявка на возврат {refund_amount}₽ оформлена. Админ свяжется с вами для возврата на карту."); notify(ADMIN_ID, f"↩️ REFUND platega: user {uid} pay#{pay_id} {refund_amount}₽ — верни через Platega вручную.")
+                else: notify(uid, f"✅ Заявка на возврат {refund_amount}₽ оформлена. Админ свяжется с вами для возврата на карту."); notify(ADMIN_ID, f"↩️ REFUND: user {uid} pay#{pay_id} {refund_amount}₽ — верни вручную.")
                 return True, "✅ Возврат оформлен."
             except Exception:
                 try: cur.execute("ROLLBACK")
@@ -1486,7 +1559,9 @@ def register_handlers():
         pid = c.data[6:]; p = PACKAGES.get(pid)
         if not p: return bot.answer_callback_query(c.id, "Неверный пакет.", show_alert=True)
         kb = types.InlineKeyboardMarkup(row_width=2)
-        kb.add(types.InlineKeyboardButton("💳 СБП (Карта)", callback_data=f"payrub_{pid}"), types.InlineKeyboardButton("⭐ Telegram Stars", callback_data=f"paystars_{pid}"))
+        kb.add(types.InlineKeyboardButton("💳 СБП (Platega)", callback_data=f"payrub_{pid}"), 
+               types.InlineKeyboardButton("⭐ Telegram Stars", callback_data=f"paystars_{pid}"))
+        kb.add(types.InlineKeyboardButton("💳 Карта/СБП (Grosh)", callback_data=f"paygrosh_{pid}"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data=f"pay_{pid}"))
         safe_edit(c.message.chat.id, c.message.message_id, f"Выбери способ оплаты для «{p['title']}» ({p['price']}₽):", reply_markup=kb)
 
@@ -1496,7 +1571,7 @@ def register_handlers():
         pid = c.data[7:]; p = PACKAGES.get(pid)
         if not p: return bot.answer_callback_query(c.id, "Неверный пакет.", show_alert=True)
         idem = f"platega:{c.from_user.id}:{pid}:{uuid.uuid4().hex[:8]}"
-        if not create_platega_payment(c.from_user.id, pid, p["price"], p["title"], "package", "pay", idem): safe_send(c.from_user.id, "⚠️ Оплата СБП временно недоступна. Попробуй Stars или поддержку.")
+        if not create_platega_payment(c.from_user.id, pid, p["price"], p["title"], "package", "pay", idem): safe_send(c.from_user.id, "⚠️ Оплата СБП временно недоступна. Попробуй Stars или Grosh.")
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("paystars_"))
     def cb_pay_stars(c):
@@ -1504,6 +1579,15 @@ def register_handlers():
         pid = c.data[9:]; p = PACKAGES.get(pid)
         if not p: return bot.answer_callback_query(c.id, "Неверный пакет.", show_alert=True)
         if not create_stars_invoice(c.from_user.id, pid, p["price"], p["title"], "package"): safe_send(c.from_user.id, "⚠️ Ошибка при создании счета Stars. Попробуй СБП.")
+
+    @bot.callback_query_handler(func=lambda c: c.data.startswith("paygrosh_"))
+    def cb_pay_grosh(c):
+        bot.answer_callback_query(c.id)
+        pid = c.data[9:]; p = PACKAGES.get(pid)
+        if not p: return bot.answer_callback_query(c.id, "Неверный пакет.", show_alert=True)
+        idem = f"grosh:{c.from_user.id}:{pid}:{uuid.uuid4().hex[:8]}"
+        if not create_grosh_payment(c.from_user.id, pid, p["price"], p["title"], "package", "pay", idem): 
+            safe_send(c.from_user.id, "⚠️ Оплата Grosh временно недоступна. Попробуй СБП или Stars.")
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("sub_"))
     def cb_sub_buy(c):
@@ -1521,7 +1605,9 @@ def register_handlers():
         code = c.data[6:]; t = SUB_TARIFFS.get(code)
         if not t: return bot.answer_callback_query(c.id, "Неверный тариф.", show_alert=True)
         kb = types.InlineKeyboardMarkup(row_width=2)
-        kb.add(types.InlineKeyboardButton("💳 СБП (Карта)", callback_data=f"subrub_{code}"), types.InlineKeyboardButton("⭐ Telegram Stars", callback_data=f"substars_{code}"))
+        kb.add(types.InlineKeyboardButton("💳 СБП (Platega)", callback_data=f"subrub_{code}"), 
+               types.InlineKeyboardButton("⭐ Telegram Stars", callback_data=f"substars_{code}"))
+        kb.add(types.InlineKeyboardButton("💳 Карта/СБП (Grosh)", callback_data=f"subgrosh_{code}"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data=f"sub_{code}"))
         safe_edit(c.message.chat.id, c.message.message_id, f"Выбери способ оплаты для «{t['title']}» ({t['price']}₽):", reply_markup=kb)
 
@@ -1539,6 +1625,15 @@ def register_handlers():
         code = c.data[9:]; t = SUB_TARIFFS.get(code)
         if not t: return bot.answer_callback_query(c.id, "Неверный тариф.", show_alert=True)
         if not create_stars_invoice(c.from_user.id, code, t["price"], f"Подписка «{t['title']}»", "subscription"): safe_send(c.from_user.id, "⚠️ Ошибка при создании счета Stars. Попробуй СБП.")
+
+    @bot.callback_query_handler(func=lambda c: c.data.startswith("subgrosh_"))
+    def cb_sub_grosh(c):
+        bot.answer_callback_query(c.id)
+        code = c.data[9:]; t = SUB_TARIFFS.get(code)
+        if not t: return bot.answer_callback_query(c.id, "Неверный тариф.", show_alert=True)
+        idem = f"grosh:{c.from_user.id}:{code}:{uuid.uuid4().hex[:8]}"
+        if not create_grosh_payment(c.from_user.id, code, t["price"], f"Подписка «{t['title']}»", "subscription", "sub", idem): 
+            safe_send(c.from_user.id, "⚠️ Оплата Grosh временно недоступна. Попробуй СБП.")
 
     @bot.pre_checkout_query_handler(func=lambda query: True)
     def process_pre_checkout_query(pre_checkout_query):
@@ -1592,20 +1687,19 @@ def register_handlers():
     def cb_admin_providers(c):
         bot.answer_callback_query(c.id)
         with DbConn() as db_c:
-            cur = db_c.cursor(); cur.execute("SELECT provider, MAX(active) FROM models WHERE provider IN ('ranvik', 'sprut', 'clodex') GROUP BY provider"); rows = cur.fetchall()
+            cur = db_c.cursor(); cur.execute("SELECT provider, MAX(active) FROM models GROUP BY provider"); rows = cur.fetchall()
         kb = types.InlineKeyboardMarkup(row_width=1)
         for prov, active in rows:
-            if prov == "ranvik": kb.add(types.InlineKeyboardButton(f"{'🛑 Выкл' if active else '✅ Вкл'} Ranvik", callback_data=f"admin_toggle_ranvik"))
-            elif prov == "sprut": kb.add(types.InlineKeyboardButton(f"{'🛑 Выкл' if active else '✅ Вкл'} SprutDock", callback_data=f"admin_toggle_sprut"))
-            elif prov == "clodex": kb.add(types.InlineKeyboardButton(f"{'🛑 Выкл' if active else '✅ Вкл'} CLODEx", callback_data=f"admin_toggle_clodex"))
+            status_icon = "🟢" if active else "🔴"
+            kb.add(types.InlineKeyboardButton(f"{status_icon} {prov.upper()}", callback_data=f"admin_toggle_{prov}"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="admin_root"))
-        safe_edit(c.message.chat.id, c.message.message_id, "🔌 <b>Провайдеры</b>\n\nВключайте модели, чтобы они появились в меню у юзеров:", reply_markup=kb, parse_mode="HTML")
+        safe_edit(c.message.chat.id, c.message.message_id, "🔌 <b>Провайдеры</b>\n\nНажми на провайдера, чтобы включить или выключить ВСЕ его модели:", reply_markup=kb, parse_mode="HTML")
 
-    @bot.callback_query_handler(func=lambda c: c.data in ("admin_toggle_ranvik", "admin_toggle_sprut", "admin_toggle_clodex"))
+    @bot.callback_query_handler(func=lambda c: c.data.startswith("admin_toggle_"))
     @admin_only
     def cb_admin_toggle_provider(c):
         bot.answer_callback_query(c.id)
-        provider = "ranvik" if "ranvik" in c.data else ("sprut" if "sprut" in c.data else "clodex")
+        provider = c.data[len("admin_toggle_"):]
         with DbConn() as db_c:
             cur = db_c.cursor(); cur.execute("SELECT MAX(active) FROM models WHERE provider=?", (provider,)); r = cur.fetchone()
             new_state = 0 if r and r[0] == 1 else 1; cur.execute("UPDATE models SET active=? WHERE provider=?", (new_state, provider))
@@ -1831,26 +1925,16 @@ def _gen_impl(uid: int, message, mid: str, m_type: str, price: int, is_admin: bo
     headers = {"Authorization": f"Bearer {POLZA_KEY}", "Content-Type": "application/json"}
     api_url = f"{POLZA_BASE}/media"
 
-    # --- ЛОГИКА ДЛЯ CLODEX (формат OpenAI) ---
+    # --- ЛОГИКА ДЛЯ CLODEX ---
     if MODELS[mid].get("provider") == "clodex":
         api_url = f"{CLODEX_API_URL}/images/generations"
         headers = {"Authorization": f"Bearer {CLODEX_API_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "model": mid,
-            "prompt": prompt,
-            "size": "1024x1024",
-            "n": 1
-        }
+        payload = {"model": mid, "prompt": prompt, "size": "1024x1024", "n": 1}
     # --- ЛОГИКА ДЛЯ SPRUTDOCK ---
     elif MODELS[mid].get("provider") == "sprut":
         api_url = f"{TEXT_API_URL}/images/generations"
         headers = {"Authorization": f"Bearer {TEXT_API_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "model": mid,
-            "prompt": prompt,
-            "size": "1024x1024",
-            "n": 1
-        }
+        payload = {"model": mid, "prompt": prompt, "size": "1024x1024", "n": 1}
 
     status = safe_send(uid, "⏳ Генерация...")
     if not status: Finance.refund(tx_id, "send_failed"); return
@@ -1865,12 +1949,11 @@ def _gen_impl(uid: int, message, mid: str, m_type: str, price: int, is_admin: bo
 
         data = r.json()
         
-        # ПРОВЕРКА: Если ответ пришел в формате OpenAI (base64) или ссылкой
         url = None
+        body = None
         if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
             item = data["data"][0]
             if "b64_json" in item:
-                # Декодируем Base64 в файл
                 body = base64.b64decode(item["b64_json"])
             elif "url" in item:
                 url = item["url"]
@@ -1949,9 +2032,31 @@ def start_health_server(port: int):
                 body = b'{"status":"ok"}' if ok else b'{"status":"degraded"}'
                 self.send_response(200 if ok else 503); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
             else: self.send_response(404); self.end_headers()
+        
+        def do_POST(self):
+            if self.path == "/webhook/grosh":
+                try:
+                    length = int(self.headers.get('Content-Length', 0))
+                    data = json.loads(self.rfile.read(length))
+                    log.info(f"Grosh webhook: {data}")
+                    
+                    status = data.get("status")
+                    tx_id = data.get("id") or data.get("transaction_id")
+                    if status in ("paid", "success", "completed") and tx_id:
+                        apply_payment_atomic_grosh(tx_id)
+                    
+                    self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
+                except Exception as e:
+                    log.exception(f"Grosh webhook error: {e}")
+                    self.send_response(500); self.end_headers()
+            else:
+                self.send_response(404); self.end_headers()
+                
         def log_message(self, *a): pass
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), H)
+        
+    srv = http.server.ThreadingHTTPServer(("0.0.0.0", port), H)
     threading.Thread(target=srv.serve_forever, daemon=True, name="health").start()
+    log.info(f"Health & Webhook server on 0.0.0.0:{port}")
 
 def _shutdown_handler(signum, frame):
     log.warning(f"signal {signum}, graceful shutdown"); SHUTDOWN.set()
@@ -1992,7 +2097,7 @@ def main():
     threading.Thread(target=payment_poller_single_loop, daemon=True, name="payment_poller").start()
     if HEALTH_PORT > 0: start_health_server(HEALTH_PORT)
 
-    log.info(f"🚀 Neuro Studio v52 started (workers={EXECUTOR_WORKERS}, queue_max={EXECUTOR_QUEUE_MAX}, db_pool={DB_POOL_SIZE}, stars_rate={STARS_RUB_PER_STAR}₽/star, poll_interval={PAYMENT_POLL_INTERVAL}s, poll_timeout={PAYMENT_POLL_TIMEOUT}s, stars_auto_refund={STARS_AUTO_REFUND})")
+    log.info(f"🚀 Neuro Studio v56 started (workers={EXECUTOR_WORKERS}, queue_max={EXECUTOR_QUEUE_MAX}, db_pool={DB_POOL_SIZE}, stars_rate={STARS_RUB_PER_STAR}₽/star, poll_interval={PAYMENT_POLL_INTERVAL}s, poll_timeout={PAYMENT_POLL_TIMEOUT}s)")
     try: bot.infinity_polling(timeout=10, long_polling_timeout=5)
     except KeyboardInterrupt: log.warning("stopped by KeyboardInterrupt")
     finally:
