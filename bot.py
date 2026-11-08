@@ -172,7 +172,14 @@ HTTP_TIMEOUT_SHORT = (5, 15)
 HTTP_TIMEOUT_MED   = (5, 30)
 HTTP_TIMEOUT_LONG  = (5, 30)
 
-ALLOWED_CDN = {"polza.ai", "cdn.polza.ai", "storage.polza.ai", "openrouter.ai", "api.ranvik.ru", "sprutdock.ru", "clodex.xyz", "api.clodex.xyz"}
+ALLOWED_CDN = {
+    "polza.ai", "cdn.polza.ai", "storage.polza.ai", 
+    "openrouter.ai", "api.ranvik.ru", 
+    "sprutdock.ru", "storage.sprutdock.ru", "cdn.sprutdock.ru",
+    "clodex.xyz", "api.clodex.xyz", "cdn.clodex.xyz", "storage.clodex.xyz",
+    "oaidalleapiprodscus.blob.core.windows.net", # Если картинки от OpenAI
+    "replicate.delivery", "pbxt.replicate.delivery" # Если от Replicate
+}
 
 _EXPECTED_CT = {
     "image": ("image/",), "edit": ("image/",), "upscale": ("image/", "video/", "application/octet-stream"),
