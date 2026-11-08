@@ -57,7 +57,6 @@ def _setup_logging():
     else:
         logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 log = logging.getLogger("neuro")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 # ==========================================================
 # ENV И КОНФИГ
