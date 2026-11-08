@@ -358,7 +358,6 @@ def _read_response(r, max_bytes: int, m_type: str) -> bytes:
     return bytes(buf)
 
 def fetch_media(url: str, max_bytes: int = FILE_MAX_MB * 1024 * 1024, m_type: str = "", _redirects: int = 0) -> bytes:
-    if not is_safe_url(url): raise RuntimeError("unsafe url")
     for attempt in range(2):
         try:
             with requests.get(url, timeout=(5, 15), allow_redirects=False, stream=True) as r:
