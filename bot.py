@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Нейро-Студия v50 — CLODEx Integration Release.
-  - Добавлены модели CLODEx (GPT-6, Claude Opus 5, Flux 3, Kling).
-  - Пофикшены таймауты (максимум 15 сек ожидания).
-  - Адекватная наценка на новые модели.
+Нейро-Студия v52 — CLODEx & SprutDock Fix Release.
+  - Исправлен формат запросов для картинок CLODEx/SprutDock (prompt в корне).
+  - Добавлена поддержка ответов в виде Base64 (если API возвращает не ссылку, а код).
+  - Оставлены все фиксы из v51 (таймауты, UI, админка).
 """
 import os
 import re
@@ -37,8 +37,27 @@ load_dotenv(override=False)
 # ==========================================================
 # ЛОГИРОВАНИЕ
 # ==========================================================
+LOG_JSON = os.getenv("LOG_JSON", "0") == "1"
+
+class _JsonFormatter(logging.Formatter):
+    def format(self, record):
+        return json.dumps({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+            "exc": self.formatException(record.exc_info) if record.exc_info else None,
+        }, ensure_ascii=False)
+
+def _setup_logging():
+    if LOG_JSON:
+        h = logging.StreamHandler(sys.stdout)
+        h.setFormatter(_JsonFormatter())
+        logging.basicConfig(level=logging.INFO, handlers=[h])
+    else:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
 log = logging.getLogger("neuro")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 # ==========================================================
 # ENV И КОНФИГ
@@ -76,7 +95,7 @@ TEXT_API_URL   = os.getenv("TEXT_API_URL", "https://sprutdock.ru/v1")
 
 # Провайдер CLODEx
 CLODEX_API_KEY = os.getenv("CLODEX_API_KEY", "")
-CLODEX_API_URL = os.getenv("CLODEX_API_URL", "https://api.clodex.xyz/v1") # Предполагаемый URL
+CLODEX_API_URL = os.getenv("CLODEX_API_URL", "https://api.clodex.xyz/v1")
 
 STARS_RUB_PER_STAR = float(os.getenv("STARS_RUB_PER_STAR", "2.0"))
 STARS_AUTO_REFUND = _env_bool("STARS_AUTO_REFUND", True)
@@ -148,7 +167,7 @@ BOT_USERNAME: str = ""
 ADMIN_ID: int = 0
 SHUTDOWN = threading.Event()
 
-# УМЕНЬШЕННЫЕ ТАЙМАУТЫ (чтобы не ждать по 90 секунд)
+# УМЕНЬШЕННЫЕ ТАЙМАУТЫ
 HTTP_TIMEOUT_SHORT = (5, 15)
 HTTP_TIMEOUT_MED   = (5, 30)
 HTTP_TIMEOUT_LONG  = (5, 30)
@@ -162,7 +181,7 @@ _EXPECTED_CT = {
 }
 
 MODELS = {
-    # --- СТАРЫЕ МОДЕЛИ (Polza) ---
+    # --- POLZA (Изображения) ---
     "openai/gpt-image-1.5":               {"name":"GPT Image 1.5",       "type":"image",  "price":7,  "cost":3.0,  "active":1},
     "openai/gpt-5-image":                 {"name":"GPT-5 Image",         "type":"image",  "price":10, "cost":4.5,  "active":1},
     "google/gemini-2.5-flash-image":      {"name":"Gemini 2.5 Flash",    "type":"image",  "price":6,  "cost":2.9,  "active":1},
@@ -194,8 +213,7 @@ MODELS = {
     "topaz/video-upscale":                {"name":"Topaz Video Upscale", "type":"upscale","price":12, "cost":6.0,  "active":1},
     "topaz/image-upscale":                {"name":"Topaz Image Upscale", "type":"upscale","price":5,  "cost":2.0,  "active":1},
 
-    # --- НОВЫЕ МОДЕЛИ (CLODEx) ---
-    # Текстовые (цена 3₽ за запрос)
+    # --- CLODEX (Текстовые и Картинки) ---
     "gpt-6-astra":                        {"name":"GPT-6 Astra (CX)",    "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"clodex"},
     "gpt-6.1-sol":                        {"name":"GPT-6.1 Sol (CX)",    "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"clodex"},
     "gpt-6.1-terra":                      {"name":"GPT-6.1 Terra (CX)",  "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"clodex"},
@@ -205,23 +223,30 @@ MODELS = {
     "qwen3.8-max":                        {"name":"Qwen 3.8 Max (CX)",    "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"clodex"},
     "glm-5.3":                            {"name":"GLM-5.3 (CX)",         "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"clodex"},
     
-    # Картинки (цена 5₽ за запрос)
     "flux-schnell":                       {"name":"Flux Schnell (CX)",    "type":"image",  "price":5,  "cost":0.0,  "active":0, "provider":"clodex"},
     "flux-dev":                           {"name":"Flux Dev (CX)",        "type":"image",  "price":5,  "cost":0.0,  "active":0, "provider":"clodex"},
     "muse-image-1.0":                     {"name":"Muse Image 1.0 (CX)",  "type":"image",  "price":5,  "cost":0.0,  "active":0, "provider":"clodex"},
     "gpt-image-2.6-sunburst":             {"name":"GPT Image 2.6 (CX)",   "type":"image",  "price":7,  "cost":0.0,  "active":0, "provider":"clodex"},
     "gpt-image-2.6-flare":                {"name":"GPT Image 2.6 Flare", "type":"image",  "price":7,  "cost":0.0,  "active":0, "provider":"clodex"},
     
-    # Видео (цена 15₽ за запрос)
     "clodex-video/kling-2.5-turbo-pro":   {"name":"Kling 2.5 Turbo (CX)","type":"video",  "price":15, "cost":0.0,  "active":0, "provider":"clodex"},
     "clodex-video/happy-horse-1.1":       {"name":"Happy Horse 1.1 (CX)","type":"video",  "price":15, "cost":0.0,  "active":0, "provider":"clodex"},
     "clodex-video/hailuo-2.3-fast":       {"name":"Hailuo 2.3 Fast (CX)", "type":"video",  "price":10, "cost":0.0,  "active":0, "provider":"clodex"},
     "clodex-video/gemini-omni-flash":     {"name":"Gemini Omni (CX)",     "type":"video",  "price":12, "cost":0.0,  "active":0, "provider":"clodex"},
-    
-    # Старые (OpenRouter и др.)
+
+    # --- SPRUTDOCK (Скрытые) ---
+    "scaledown/summarize":                {"name":"ScaleDown Sum (S)",   "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"sprut"},
+    "scaledown/extract":                  {"name":"ScaleDown Ext (S)",   "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"sprut"},
+    "xingchen-agi/xing4.0-29b-a4b":       {"name":"XingChen 29B (S)",    "type":"text",   "price":0,  "cost":0.0,  "active":0, "provider":"sprut"},
+    "recursive/flint-v1.0":               {"name":"Recursive Flint (S)", "type":"text",   "price":0,  "cost":0.0,  "active":0, "provider":"sprut"},
+    "stealth/crouton-alpha":              {"name":"Crouton Alpha (S)",   "type":"text",   "price":0,  "cost":0.0,  "active":0, "provider":"sprut"},
+
+    # --- RANVIK (Скрытые, платные) ---
     "openai/gpt-6-luna":                  {"name":"GPT-6 Luna (R)",      "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"ranvik"},
     "deepseek/deepseek-v4.1-flash":       {"name":"DeepSeek (R)",        "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"ranvik"},
     "anthropic/claude-haiku-5.5":         {"name":"Claude Haiku (R)",    "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"ranvik"},
+
+    # --- OPENROUTER (Бесплатные) ---
     "nvidia/nemotron-3-ultra-550b-a55b:free": {"name":"Nemotron 3 Ultra", "type":"text", "price":0, "cost":0.0, "active":1, "provider":"openrouter"},
     "google/gemma-4-31b-it:free":         {"name":"Gemma 4 31B",        "type":"text",   "price":0, "cost":0.0, "active":1, "provider":"openrouter"},
 }
@@ -464,7 +489,7 @@ def init_db():
         for mid, m in MODELS.items(): 
             cur.execute("INSERT OR IGNORE INTO models(model_id, active, price, cost, provider) VALUES(?,?,?,?,?)", 
                         (mid, m["active"], m["price"], m["cost"], m.get("provider", "polza")))
-        for k, v in {"payments_on":"1","generations_on":"1","schema_version":"50"}.items(): cur.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
+        for k, v in {"payments_on":"1","generations_on":"1","schema_version":"52"}.items(): cur.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
 
 def get_user(uid: int) -> Optional[dict]:
     with DbConn() as c:
@@ -1796,15 +1821,30 @@ def _gen_impl(uid: int, message, mid: str, m_type: str, price: int, is_admin: bo
         if m_type in ("edit","animate"): inp["images"] = [{"type":"base64","data":f"data:image/jpeg;base64,{b64}"}]
         elif m_type == "upscale": inp["videos" if "video" in mid else "images"] = [{"type":"base64","data":f"data:image/jpeg;base64,{b64}"}]
 
-    # Для CLODEx может быть другой формат запроса, но часто это OpenAI-compatible
     payload = {"model": mid, "async": False, "input": inp}
     headers = {"Authorization": f"Bearer {POLZA_KEY}", "Content-Type": "application/json"}
-    
-    # Если это CLODEx видео/картинки, меняем URL и ключ
-    api_url = f"{POLZA_BASE}"
+    api_url = f"{POLZA_BASE}/media"
+
+    # --- ЛОГИКА ДЛЯ CLODEX (формат OpenAI) ---
     if MODELS[mid].get("provider") == "clodex":
-        api_url = f"{CLODEX_API_URL}" # Или /images/generations, нужно смотреть их доки
+        api_url = f"{CLODEX_API_URL}/images/generations"
         headers = {"Authorization": f"Bearer {CLODEX_API_KEY}", "Content-Type": "application/json"}
+        payload = {
+            "model": mid,
+            "prompt": prompt,
+            "size": "1024x1024",
+            "n": 1
+        }
+    # --- ЛОГИКА ДЛЯ SPRUTDOCK ---
+    elif MODELS[mid].get("provider") == "sprut":
+        api_url = f"{TEXT_API_URL}/images/generations"
+        headers = {"Authorization": f"Bearer {TEXT_API_KEY}", "Content-Type": "application/json"}
+        payload = {
+            "model": mid,
+            "prompt": prompt,
+            "size": "1024x1024",
+            "n": 1
+        }
 
     status = safe_send(uid, "⏳ Генерация...")
     if not status: Finance.refund(tx_id, "send_failed"); return
@@ -1818,23 +1858,24 @@ def _gen_impl(uid: int, message, mid: str, m_type: str, price: int, is_admin: bo
             safe_edit(uid, status.message_id, f"❌ API: {error_msg}"); Finance.refund(tx_id, f"api_{r.status_code}"); return
 
         data = r.json()
-        if data.get("status") == "pending":
-            deadline = time.time() + POLL_TIMEOUT.get(m_type, 120)
-            while time.time() < deadline:
-                if SHUTDOWN.is_set(): raise RuntimeError("shutdown")
-                time.sleep(2)
-                try: chk = requests.get(f"{api_url}/{data['id']}", headers=headers, timeout=HTTP_TIMEOUT_SHORT).json()
-                except requests.RequestException: continue
-                st = chk.get("status")
-                if st == "completed": data = chk; break
-                if st == "failed": raise RuntimeError("failed")
-            else: raise RuntimeError("timeout")
+        
+        # ПРОВЕРКА: Если ответ пришел в формате OpenAI (base64) или ссылкой
+        url = None
+        if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
+            item = data["data"][0]
+            if "b64_json" in item:
+                # Декодируем Base64 в файл
+                body = base64.b64decode(item["b64_json"])
+            elif "url" in item:
+                url = item["url"]
+        elif "url" in data:
+            url = data["url"]
 
-        url = (data.get("data") or [{}])[0].get("url") or data.get("url")
-        if not url: raise RuntimeError("no url")
-        if not is_safe_url(url): raise RuntimeError(f"unsafe {url[:80]}")
+        if url:
+            body = fetch_media(url, m_type=m_type)
+        
+        if not body: raise RuntimeError("no image data")
 
-        body = fetch_media(url, m_type=m_type)
         ext = {"image":".jpg","audio":".mp3","tts":".ogg","video":".mp4","edit":".jpg","animate":".mp4","upscale":".bin"}.get(m_type, ".bin")
         tmp = os.path.join(DATA_DIR, f"temp_{uid}_{uuid.uuid4().hex[:8]}{ext}")
         with open(tmp, "wb") as f: f.write(body)
@@ -1945,7 +1986,7 @@ def main():
     threading.Thread(target=payment_poller_single_loop, daemon=True, name="payment_poller").start()
     if HEALTH_PORT > 0: start_health_server(HEALTH_PORT)
 
-    log.info(f"🚀 Neuro Studio v50 started (workers={EXECUTOR_WORKERS}, queue_max={EXECUTOR_QUEUE_MAX}, db_pool={DB_POOL_SIZE}, stars_rate={STARS_RUB_PER_STAR}₽/star, poll_interval={PAYMENT_POLL_INTERVAL}s, poll_timeout={PAYMENT_POLL_TIMEOUT}s, stars_auto_refund={STARS_AUTO_REFUND})")
+    log.info(f"🚀 Neuro Studio v52 started (workers={EXECUTOR_WORKERS}, queue_max={EXECUTOR_QUEUE_MAX}, db_pool={DB_POOL_SIZE}, stars_rate={STARS_RUB_PER_STAR}₽/star, poll_interval={PAYMENT_POLL_INTERVAL}s, poll_timeout={PAYMENT_POLL_TIMEOUT}s, stars_auto_refund={STARS_AUTO_REFUND})")
     try: bot.infinity_polling(timeout=10, long_polling_timeout=5)
     except KeyboardInterrupt: log.warning("stopped by KeyboardInterrupt")
     finally:
