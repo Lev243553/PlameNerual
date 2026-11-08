@@ -435,10 +435,12 @@ def init_db():
         _add_column_if_missing(cur, "users", "sub_tokens_used", "INTEGER NOT NULL DEFAULT 0")
         
         cur.execute('''CREATE TABLE IF NOT EXISTS models(model_id TEXT PRIMARY KEY, active INTEGER NOT NULL DEFAULT 1, price INTEGER NOT NULL DEFAULT 0, cost REAL NOT NULL DEFAULT 0)''')
+        _add_column_if_missing(cur, "models", "provider", "TEXT DEFAULT 'polza'")
         cur.execute('''CREATE TABLE IF NOT EXISTS payments(
             id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, package_id TEXT NOT NULL,
             amount INTEGER NOT NULL, status TEXT NOT NULL, platega_id TEXT, ts REAL NOT NULL,
             kind TEXT NOT NULL DEFAULT 'package')''')
+        
         _add_column_if_missing(cur, "payments", "provider", "TEXT NOT NULL DEFAULT 'platega'")
         _add_column_if_missing(cur, "payments", "invoice_payload", "TEXT DEFAULT ''")
         _add_column_if_missing(cur, "payments", "stars_amount", "INTEGER NOT NULL DEFAULT 0")
@@ -458,6 +460,7 @@ def init_db():
         _add_column_if_missing(cur, "outbox", "next_try", "REAL NOT NULL DEFAULT 0")
         cur.execute('''CREATE TABLE IF NOT EXISTS payment_poll_state(platega_id TEXT PRIMARY KEY, errors INTEGER NOT NULL DEFAULT 0, next_try REAL NOT NULL DEFAULT 0, last_checked REAL NOT NULL DEFAULT 0)''')
         cur.execute('''CREATE TABLE IF NOT EXISTS payment_events(id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL, ref TEXT NOT NULL, event TEXT NOT NULL, details TEXT DEFAULT '', ts REAL NOT NULL)''')
+        _add_column_if_missing(cur, "models", "provider", "TEXT DEFAULT")''')
 
         for mid, m in MODELS.items(): cur.execute("INSERT OR IGNORE INTO models VALUES(?,?,?,?)", (mid, m["active"], m["price"], m["cost"]))
         for k, v in {"payments_on":"1","generations_on":"1","schema_version":"46"}.items(): cur.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
