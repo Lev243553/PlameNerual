@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Нейро-Студия v46 — Token Subscriptions Release.
-  - Добавлены текстовые подписки (1M, 3M, 7M токенов).
-  - Платные текстовые модели стоят 3₽ (защита от убытков).
-  - Добавлено меню текстовых подписок.
-  - Модели Ranvik и SprutDock включаются из админки.
+Нейро-Студия v47 — Premium UI & Text Subscriptions Release.
+  - Обновленный, привлекательный интерфейс меню.
+  - Полноценные подписки на текст (1М, 3М, 7М токенов) с прогресс-баром.
+  - Улучшенный экран оплаты (СБП / Stars).
+  - Платные текстовые модели (3₽) для защиты от убытков.
 """
 import os
 import re
@@ -463,8 +463,8 @@ def init_db():
 
         for mid, m in MODELS.items(): 
             cur.execute("INSERT OR IGNORE INTO models(model_id, active, price, cost, provider) VALUES(?,?,?,?,?)", 
-                (mid, m["active"], m["price"], m["cost"], m.get("provider", "polza")))
-        for k, v in {"payments_on":"1","generations_on":"1","schema_version":"46"}.items(): cur.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
+                        (mid, m["active"], m["price"], m["cost"], m.get("provider", "polza")))
+        for k, v in {"payments_on":"1","generations_on":"1","schema_version":"47"}.items(): cur.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
 
 def get_user(uid: int) -> Optional[dict]:
     with DbConn() as c:
@@ -1116,18 +1116,77 @@ def register_handlers():
     def cb_menu_text_sub(c):
         bot.answer_callback_query(c.id)
         if setting("payments_on") != "1": return bot.answer_callback_query(c.id, "Оплата отключена.", show_alert=True)
+        
         kb = types.InlineKeyboardMarkup(row_width=1)
-        for code, t in TEXT_SUB_TARIFFS.items(): kb.add(types.InlineKeyboardButton(f"{t['title']} — {t['tokens']:,} токенов / {t['price']}₽", callback_data=f"buy_text_sub_{code}"))
+        kb.add(types.InlineKeyboardButton("🚀 Текст Старт — 1 млн токенов / 199₽", callback_data="buy_text_sub_text_start"))
+        kb.add(types.InlineKeyboardButton("🔥 Текст Про — 3 млн токенов / 490₽", callback_data="buy_text_sub_text_pro"))
+        kb.add(types.InlineKeyboardButton("👑 Текст Макс — 7 млн токенов / 990₽", callback_data="buy_text_sub_text_max"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
-        safe_edit(c.message.chat.id, c.message.message_id, "📝 <b>Подписки на текстовые нейросети</b>\n\nВыбери тариф (оплата за токены, а не за сообщения):", reply_markup=kb, parse_mode="HTML")
+        
+        txt = (
+            "📝 <b>Подписки на текстовые нейросети</b>\n\n"
+            "Покупая подписку, вы получаете доступ к <b>самым мощным текстовым ИИ</b> (GPT-6, DeepSeek, Claude) без ограничений по количеству сообщений.\n\n"
+            "💡 <b>Почему это выгодно?</b>\n"
+            "Обычная генерация стоит <b>3₽</b> за запрос. Покупая подписку, вы платите копейки за каждый токен.\n\n"
+            "📊 <b>Сколько это в сообщениях?</b>\n"
+            "1 млн токенов ≈ <b>500 полноценных ответов</b> (или 1500 коротких). Этого хватит на месяц активного общения!\n\n"
+            "⬇️ Выбери свой тариф:"
+        )
+        safe_edit(c.message.chat.id, c.message.message_id, txt, reply_markup=kb, parse_mode="HTML")
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("buy_text_sub_"))
     def cb_buy_text_sub(c):
         bot.answer_callback_query(c.id)
         code = c.data[13:]; t = TEXT_SUB_TARIFFS.get(code)
         if not t: return bot.answer_callback_query(c.id, "Неверный тариф.", show_alert=True)
+        
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        kb.add(types.InlineKeyboardButton(f"✅ Подтвердить покупку за {t['price']}₽", callback_data=f"textsubok_{code}"))
+        kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_text_sub"))
+        
+        txt = (
+            f"🛒 <b>Подтверждение подписки</b>\n\n"
+            f"Тариф: <b>{t['title']}</b>\n"
+            f"Лимит: <b>{t['tokens']:,} токенов</b>\n"
+            f"Срок: <b>{t['days']} дней</b>\n"
+            f"Сумма: <b>{t['price']}₽</b>\n\n"
+            f"<i>Возврат средств доступен через команду /refund (пропорционально остатку токенов).</i>"
+        )
+        safe_edit(c.message.chat.id, c.message.message_id, txt, reply_markup=kb, parse_mode="HTML")
+
+    @bot.callback_query_handler(func=lambda c: c.data.startswith("textsubok_"))
+    def cb_text_sub_ok(c):
+        bot.answer_callback_query(c.id)
+        code = c.data[10:]; t = TEXT_SUB_TARIFFS.get(code)
+        if not t: return bot.answer_callback_query(c.id, "Неверный тариф.", show_alert=True)
+        
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.add(types.InlineKeyboardButton("💳 Оплатить (СБП)", callback_data=f"textsubrub_{code}"), 
+               types.InlineKeyboardButton("⭐ Оплатить Stars", callback_data=f"textsubstars_{code}"))
+        kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data=f"buy_text_sub_{code}"))
+        
+        safe_edit(c.message.chat.id, c.message.message_id, 
+                  f"Выбери удобный способ оплаты для <b>«{t['title']}»</b>:", 
+                  reply_markup=kb, parse_mode="HTML")
+
+    @bot.callback_query_handler(func=lambda c: c.data.startswith("textsubrub_"))
+    def cb_text_sub_rub(c):
+        bot.answer_callback_query(c.id)
+        code = c.data[11:]; t = TEXT_SUB_TARIFFS.get(code)
+        if not t: return bot.answer_callback_query(c.id, "Неверный тариф.", show_alert=True)
+        
         idem = f"text_sub:{c.from_user.id}:{code}:{uuid.uuid4().hex[:8]}"
-        if not create_platega_payment(c.from_user.id, code, t["price"], t["title"], "text_sub", "txt", idem): safe_send(c.from_user.id, "⚠️ Оплата СБП временно недоступна. Попробуй Stars.")
+        if not create_platega_payment(c.from_user.id, code, t["price"], t["title"], "text_sub", "txt", idem): 
+            safe_send(c.from_user.id, "⚠️ Оплата СБП временно недоступна. Попробуй Stars.")
+
+    @bot.callback_query_handler(func=lambda c: c.data.startswith("textsubstars_"))
+    def cb_text_sub_stars(c):
+        bot.answer_callback_query(c.id)
+        code = c.data[13:]; t = TEXT_SUB_TARIFFS.get(code)
+        if not t: return bot.answer_callback_query(c.id, "Неверный тариф.", show_alert=True)
+        
+        if not create_stars_invoice(c.from_user.id, code, t["price"], t["title"], "text_sub"): 
+            safe_send(c.from_user.id, "⚠️ Ошибка при создании счета Stars. Попробуй СБП.")
 
     @bot.callback_query_handler(func=lambda c: c.data == "clear_chat")
     def cb_clear_chat(c):
@@ -1305,7 +1364,30 @@ def register_handlers():
     def cb_balance(c):
         bot.answer_callback_query(c.id)
         u = get_user(c.from_user.id)
-        txt = (f"💰 <b>Баланс</b>\n\n🖼 {u['balance_img']} | 🎵 {u['balance_aud']} | 🎬 {u['balance_vid']}\n🗣 {u['balance_tts']} | 📝 {u['balance_stt']} | ✏️ {u['balance_edit']}\n🎞 {u['balance_anim']} | 🔍 {u['balance_up']}\n\n🎁 Бесплатные: {u['free_image']}\n💬 Тексты: {u['text_free_used']}/{FREE_TEXT_LIMIT}\n🎫 Подписка: {('✅ ' + u['sub_plan'] if sub_active(u) else 'нет')}")
+        
+        # Прогресс-бар для текстовой подписки
+        text_sub_info = ""
+        if sub_active(u) and u["sub_plan"] in TEXT_SUB_TARIFFS:
+            t = TEXT_SUB_TARIFFS[u["sub_plan"]]
+            used = u["sub_tokens_used"]
+            total = t["tokens"]
+            left = max(0, total - used)
+            percent = int((used / total) * 100) if total > 0 else 0
+            bar = "🟩" * (percent // 10) + "⬜️" * (10 - (percent // 10))
+            text_sub_info = f"\n\n📝 <b>Текстовая подписка:</b> {t['title']}\n{bar} {percent}%\nОсталось: <b>{left:,} / {total:,}</b> токенов"
+
+        txt = (f"💰 <b>Твой баланс</b>\n\n"
+               f"🖼 Картинки: <b>{u['balance_img']}</b>\n"
+               f"🎵 Музыка: <b>{u['balance_aud']}</b>\n"
+               f"🎬 Видео: <b>{u['balance_vid']}</b>\n"
+               f"🗣 Озвучка: <b>{u['balance_tts']}</b>\n"
+               f"📝 Расшифровка: <b>{u['balance_stt']}</b>\n"
+               f"✏️ Редактор: <b>{u['balance_edit']}</b>\n"
+               f"🎞 Оживление: <b>{u['balance_anim']}</b>\n"
+               f"🔍 Апскейл: <b>{u['balance_up']}</b>\n\n"
+               f"🎁 Бесплатные картинки: <b>{u['free_image']}</b>\n"
+               f"💬 Бесплатные тексты: <b>{u['text_free_used']}/{FREE_TEXT_LIMIT}</b>"
+               f"{text_sub_info}")
         safe_edit(c.message.chat.id, c.message.message_id, txt, reply_markup=back_menu(), parse_mode="HTML")
 
     @bot.callback_query_handler(func=lambda c: c.data == "menu_works")
@@ -1848,7 +1930,7 @@ def main():
     threading.Thread(target=payment_poller_single_loop, daemon=True, name="payment_poller").start()
     if HEALTH_PORT > 0: start_health_server(HEALTH_PORT)
 
-    log.info(f"🚀 Neuro Studio v46 started (workers={EXECUTOR_WORKERS}, queue_max={EXECUTOR_QUEUE_MAX}, db_pool={DB_POOL_SIZE}, stars_rate={STARS_RUB_PER_STAR}₽/star, poll_interval={PAYMENT_POLL_INTERVAL}s, poll_timeout={PAYMENT_POLL_TIMEOUT}s, stars_auto_refund={STARS_AUTO_REFUND})")
+    log.info(f"🚀 Neuro Studio v47 started (workers={EXECUTOR_WORKERS}, queue_max={EXECUTOR_QUEUE_MAX}, db_pool={DB_POOL_SIZE}, stars_rate={STARS_RUB_PER_STAR}₽/star, poll_interval={PAYMENT_POLL_INTERVAL}s, poll_timeout={PAYMENT_POLL_TIMEOUT}s, stars_auto_refund={STARS_AUTO_REFUND})")
     try: bot.infinity_polling(timeout=10, long_polling_timeout=5)
     except KeyboardInterrupt: log.warning("stopped by KeyboardInterrupt")
     finally:
