@@ -460,11 +460,10 @@ def init_db():
         _add_column_if_missing(cur, "outbox", "next_try", "REAL NOT NULL DEFAULT 0")
         cur.execute('''CREATE TABLE IF NOT EXISTS payment_poll_state(platega_id TEXT PRIMARY KEY, errors INTEGER NOT NULL DEFAULT 0, next_try REAL NOT NULL DEFAULT 0, last_checked REAL NOT NULL DEFAULT 0)''')
         cur.execute('''CREATE TABLE IF NOT EXISTS payment_events(id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL, ref TEXT NOT NULL, event TEXT NOT NULL, details TEXT DEFAULT '', ts REAL NOT NULL)''')
-        _add_column_if_missing(cur, "models", "provider", "TEXT DEFAULT")''')
 
         for mid, m in MODELS.items(): 
-            cur.execute("INSERT OR IGNORE INTO models(model_id, active, price, cost, provider) VALUES(?,?,?,?,?)"))
-                    (mid, m["active"], m["price"], m["cost"], m.get("provider", "polza")))
+            cur.execute("INSERT OR IGNORE INTO models(model_id, active, price, cost, provider) VALUES(?,?,?,?,?)", 
+                (mid, m["active"], m["price"], m["cost"], m.get("provider", "polza")))
         for k, v in {"payments_on":"1","generations_on":"1","schema_version":"46"}.items(): cur.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
 
 def get_user(uid: int) -> Optional[dict]:
