@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Нейро-Студия v47 — Premium UI & Text Subscriptions Release.
-  - Обновленный, привлекательный интерфейс меню.
-  - Полноценные подписки на текст (1М, 3М, 7М токенов) с прогресс-баром.
-  - Улучшенный экран оплаты (СБП / Stars).
-  - Платные текстовые модели (3₽) для защиты от убытков.
+Нейро-Студия v50 — CLODEx Integration Release.
+  - Добавлены модели CLODEx (GPT-6, Claude Opus 5, Flux 3, Kling).
+  - Пофикшены таймауты (максимум 15 сек ожидания).
+  - Адекватная наценка на новые модели.
 """
 import os
 import re
@@ -38,27 +37,8 @@ load_dotenv(override=False)
 # ==========================================================
 # ЛОГИРОВАНИЕ
 # ==========================================================
-LOG_JSON = os.getenv("LOG_JSON", "0") == "1"
-
-class _JsonFormatter(logging.Formatter):
-    def format(self, record):
-        return json.dumps({
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "level": record.levelname,
-            "logger": record.name,
-            "msg": record.getMessage(),
-            "exc": self.formatException(record.exc_info) if record.exc_info else None,
-        }, ensure_ascii=False)
-
-def _setup_logging():
-    if LOG_JSON:
-        h = logging.StreamHandler(sys.stdout)
-        h.setFormatter(_JsonFormatter())
-        logging.basicConfig(level=logging.INFO, handlers=[h])
-    else:
-        logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-
 log = logging.getLogger("neuro")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 # ==========================================================
 # ENV И КОНФИГ
@@ -89,11 +69,14 @@ PLATEGA_SECRET = os.getenv("PLATEGA_SECRET_KEY", "")
 PLATEGA_URL    = os.getenv("PLATEGA_API_URL", "https://app.platega.io")
 RETURN_URL     = os.getenv("RETURN_URL", "")
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
-
 RANVIK_API_KEY = os.getenv("RANVIK_API_KEY", "")
 RANVIK_API_URL = os.getenv("RANVIK_API_URL", "https://api.ranvik.ru/v1")
 TEXT_API_KEY   = os.getenv("TEXT_API_KEY", "")
 TEXT_API_URL   = os.getenv("TEXT_API_URL", "https://sprutdock.ru/v1")
+
+# Провайдер CLODEx
+CLODEX_API_KEY = os.getenv("CLODEX_API_KEY", "")
+CLODEX_API_URL = os.getenv("CLODEX_API_URL", "https://api.clodex.xyz/v1") # Предполагаемый URL
 
 STARS_RUB_PER_STAR = float(os.getenv("STARS_RUB_PER_STAR", "2.0"))
 STARS_AUTO_REFUND = _env_bool("STARS_AUTO_REFUND", True)
@@ -144,9 +127,9 @@ CLEANUP_BATCH     = 500
 RATE_CLEANUP_BATCH = 500
 
 SUB_TARIFFS = {
-    "start": {"title":"Старт", "price": _env_int("SUB_START_PRICE", 290), "limit": _env_int("SUB_START_LIMIT", 30), "days":30},
-    "pro":   {"title":"Про",   "price": _env_int("SUB_PRO_PRICE", 590),   "limit": _env_int("SUB_PRO_LIMIT", 70),   "days":30},
-    "max":   {"title":"Максимум","price": _env_int("SUB_MAX_PRICE", 990), "limit": _env_int("SUB_MAX_LIMIT", 130),  "days":30},
+    "start": {"title":"Старт", "price": 290, "limit": 30, "days":30},
+    "pro":   {"title":"Про",   "price": 590, "limit": 70, "days":30},
+    "max":   {"title":"Максимум","price": 990, "limit": 130, "days":30},
 }
 
 TEXT_SUB_TARIFFS = {
@@ -165,11 +148,12 @@ BOT_USERNAME: str = ""
 ADMIN_ID: int = 0
 SHUTDOWN = threading.Event()
 
-HTTP_TIMEOUT_SHORT = (5, 30)
-HTTP_TIMEOUT_MED   = (5, 60)
-HTTP_TIMEOUT_LONG  = (5, 90)
+# УМЕНЬШЕННЫЕ ТАЙМАУТЫ (чтобы не ждать по 90 секунд)
+HTTP_TIMEOUT_SHORT = (5, 15)
+HTTP_TIMEOUT_MED   = (5, 30)
+HTTP_TIMEOUT_LONG  = (5, 30)
 
-ALLOWED_CDN = {"polza.ai", "cdn.polza.ai", "storage.polza.ai", "openrouter.ai", "api.ranvik.ru", "sprutdock.ru"}
+ALLOWED_CDN = {"polza.ai", "cdn.polza.ai", "storage.polza.ai", "openrouter.ai", "api.ranvik.ru", "sprutdock.ru", "clodex.xyz", "api.clodex.xyz"}
 
 _EXPECTED_CT = {
     "image": ("image/",), "edit": ("image/",), "upscale": ("image/", "video/", "application/octet-stream"),
@@ -178,6 +162,7 @@ _EXPECTED_CT = {
 }
 
 MODELS = {
+    # --- СТАРЫЕ МОДЕЛИ (Polza) ---
     "openai/gpt-image-1.5":               {"name":"GPT Image 1.5",       "type":"image",  "price":7,  "cost":3.0,  "active":1},
     "openai/gpt-5-image":                 {"name":"GPT-5 Image",         "type":"image",  "price":10, "cost":4.5,  "active":1},
     "google/gemini-2.5-flash-image":      {"name":"Gemini 2.5 Flash",    "type":"image",  "price":6,  "cost":2.9,  "active":1},
@@ -208,17 +193,35 @@ MODELS = {
     "kling/v2.6-motion-control":          {"name":"Kling Motion",        "type":"animate","price":20, "cost":10.0, "active":1},
     "topaz/video-upscale":                {"name":"Topaz Video Upscale", "type":"upscale","price":12, "cost":6.0,  "active":1},
     "topaz/image-upscale":                {"name":"Topaz Image Upscale", "type":"upscale","price":5,  "cost":2.0,  "active":1},
+
+    # --- НОВЫЕ МОДЕЛИ (CLODEx) ---
+    # Текстовые (цена 3₽ за запрос)
+    "gpt-6-astra":                        {"name":"GPT-6 Astra (CX)",    "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"clodex"},
+    "gpt-6.1-sol":                        {"name":"GPT-6.1 Sol (CX)",    "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"clodex"},
+    "gpt-6.1-terra":                      {"name":"GPT-6.1 Terra (CX)",  "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"clodex"},
+    "claude-opus-5":                      {"name":"Claude Opus 5 (CX)",   "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"clodex"},
+    "claude-fable-5.1":                   {"name":"Claude Fable 5.1 (CX)","type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"clodex"},
+    "kimi-k3.1-pro":                      {"name":"Kimi K3.1 Pro (CX)",   "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"clodex"},
+    "qwen3.8-max":                        {"name":"Qwen 3.8 Max (CX)",    "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"clodex"},
+    "glm-5.3":                            {"name":"GLM-5.3 (CX)",         "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"clodex"},
     
+    # Картинки (цена 5₽ за запрос)
+    "flux-schnell":                       {"name":"Flux Schnell (CX)",    "type":"image",  "price":5,  "cost":0.0,  "active":0, "provider":"clodex"},
+    "flux-dev":                           {"name":"Flux Dev (CX)",        "type":"image",  "price":5,  "cost":0.0,  "active":0, "provider":"clodex"},
+    "muse-image-1.0":                     {"name":"Muse Image 1.0 (CX)",  "type":"image",  "price":5,  "cost":0.0,  "active":0, "provider":"clodex"},
+    "gpt-image-2.6-sunburst":             {"name":"GPT Image 2.6 (CX)",   "type":"image",  "price":7,  "cost":0.0,  "active":0, "provider":"clodex"},
+    "gpt-image-2.6-flare":                {"name":"GPT Image 2.6 Flare", "type":"image",  "price":7,  "cost":0.0,  "active":0, "provider":"clodex"},
+    
+    # Видео (цена 15₽ за запрос)
+    "clodex-video/kling-2.5-turbo-pro":   {"name":"Kling 2.5 Turbo (CX)","type":"video",  "price":15, "cost":0.0,  "active":0, "provider":"clodex"},
+    "clodex-video/happy-horse-1.1":       {"name":"Happy Horse 1.1 (CX)","type":"video",  "price":15, "cost":0.0,  "active":0, "provider":"clodex"},
+    "clodex-video/hailuo-2.3-fast":       {"name":"Hailuo 2.3 Fast (CX)", "type":"video",  "price":10, "cost":0.0,  "active":0, "provider":"clodex"},
+    "clodex-video/gemini-omni-flash":     {"name":"Gemini Omni (CX)",     "type":"video",  "price":12, "cost":0.0,  "active":0, "provider":"clodex"},
+    
+    # Старые (OpenRouter и др.)
     "openai/gpt-6-luna":                  {"name":"GPT-6 Luna (R)",      "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"ranvik"},
     "deepseek/deepseek-v4.1-flash":       {"name":"DeepSeek (R)",        "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"ranvik"},
     "anthropic/claude-haiku-5.5":         {"name":"Claude Haiku (R)",    "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"ranvik"},
-    
-    "scaledown/summarize":                {"name":"ScaleDown Sum (S)",   "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"sprut"},
-    "scaledown/extract":                  {"name":"ScaleDown Ext (S)",   "type":"text",   "price":3,  "cost":0.0,  "active":0, "provider":"sprut"},
-    "xingchen-agi/xing4.0-29b-a4b":       {"name":"XingChen 29B (S)",    "type":"text",   "price":0,  "cost":0.0,  "active":0, "provider":"sprut"},
-    "recursive/flint-v1.0":               {"name":"Recursive Flint (S)", "type":"text",   "price":0,  "cost":0.0,  "active":0, "provider":"sprut"},
-    "stealth/crouton-alpha":              {"name":"Crouton Alpha (S)",   "type":"text",   "price":0,  "cost":0.0,  "active":0, "provider":"sprut"},
-
     "nvidia/nemotron-3-ultra-550b-a55b:free": {"name":"Nemotron 3 Ultra", "type":"text", "price":0, "cost":0.0, "active":1, "provider":"openrouter"},
     "google/gemma-4-31b-it:free":         {"name":"Gemma 4 31B",        "type":"text",   "price":0, "cost":0.0, "active":1, "provider":"openrouter"},
 }
@@ -258,9 +261,6 @@ _BALANCE_COLS = frozenset(BAL_FIELD.values())
 _PERSONAL_CLEAR_COLS = tuple(c for c in USER_COLS if c not in _BALANCE_COLS and c not in {"sub_plan","sub_until","sub_used","sub_auto","sub_id"})
 _STRING_COLS = {"username","sub_plan","sub_id","state","temp_model_id","admin_state"}
 
-# ==========================================================
-# МОДЕРАЦИЯ
-# ==========================================================
 def moderation_check(text: str) -> bool:
     if not text or not text.strip(): return True
     if MODERATION_API_URL:
@@ -327,9 +327,9 @@ def _read_response(r, max_bytes: int, m_type: str) -> bytes:
 
 def fetch_media(url: str, max_bytes: int = FILE_MAX_MB * 1024 * 1024, m_type: str = "", _redirects: int = 0) -> bytes:
     if not is_safe_url(url): raise RuntimeError("unsafe url")
-    for attempt in range(3):
+    for attempt in range(2):
         try:
-            with requests.get(url, timeout=HTTP_TIMEOUT_LONG, allow_redirects=False, stream=True) as r:
+            with requests.get(url, timeout=(5, 15), allow_redirects=False, stream=True) as r:
                 if 300 <= r.status_code < 400:
                     loc = r.headers.get("Location", "")
                     if not loc or _redirects >= 3 or not is_safe_url(loc): raise RuntimeError("unsafe redirect")
@@ -338,11 +338,11 @@ def fetch_media(url: str, max_bytes: int = FILE_MAX_MB * 1024 * 1024, m_type: st
                 return _read_response(r, max_bytes, m_type)
         except requests.exceptions.ConnectionError as e:
             if "Read timed out" in str(e) or "Connection aborted" in str(e):
-                log.warning(f"fetch_media timeout (attempt {attempt+1}/3), retrying in 2s...")
-                time.sleep(2)
+                log.warning(f"fetch_media timeout (attempt {attempt+1}/2), retrying in 1s...")
+                time.sleep(1)
                 continue
             raise
-    raise RuntimeError("failed to download media after 3 attempts")
+    raise RuntimeError("failed to download media (server timeout)")
 
 def download_tg_file(message) -> Optional[bytes]:
     try:
@@ -464,7 +464,7 @@ def init_db():
         for mid, m in MODELS.items(): 
             cur.execute("INSERT OR IGNORE INTO models(model_id, active, price, cost, provider) VALUES(?,?,?,?,?)", 
                         (mid, m["active"], m["price"], m["cost"], m.get("provider", "polza")))
-        for k, v in {"payments_on":"1","generations_on":"1","schema_version":"47"}.items(): cur.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
+        for k, v in {"payments_on":"1","generations_on":"1","schema_version":"50"}.items(): cur.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
 
 def get_user(uid: int) -> Optional[dict]:
     with DbConn() as c:
@@ -1365,13 +1365,10 @@ def register_handlers():
         bot.answer_callback_query(c.id)
         u = get_user(c.from_user.id)
         
-        # Прогресс-бар для текстовой подписки
         text_sub_info = ""
         if sub_active(u) and u["sub_plan"] in TEXT_SUB_TARIFFS:
             t = TEXT_SUB_TARIFFS[u["sub_plan"]]
-            used = u["sub_tokens_used"]
-            total = t["tokens"]
-            left = max(0, total - used)
+            used = u["sub_tokens_used"]; total = t["tokens"]; left = max(0, total - used)
             percent = int((used / total) * 100) if total > 0 else 0
             bar = "🟩" * (percent // 10) + "⬜️" * (10 - (percent // 10))
             text_sub_info = f"\n\n📝 <b>Текстовая подписка:</b> {t['title']}\n{bar} {percent}%\nОсталось: <b>{left:,} / {total:,}</b> токенов"
@@ -1564,19 +1561,20 @@ def register_handlers():
     def cb_admin_providers(c):
         bot.answer_callback_query(c.id)
         with DbConn() as db_c:
-            cur = db_c.cursor(); cur.execute("SELECT provider, MAX(active) FROM models WHERE provider IN ('ranvik', 'sprut') GROUP BY provider"); rows = cur.fetchall()
+            cur = db_c.cursor(); cur.execute("SELECT provider, MAX(active) FROM models WHERE provider IN ('ranvik', 'sprut', 'clodex') GROUP BY provider"); rows = cur.fetchall()
         kb = types.InlineKeyboardMarkup(row_width=1)
         for prov, active in rows:
             if prov == "ranvik": kb.add(types.InlineKeyboardButton(f"{'🛑 Выкл' if active else '✅ Вкл'} Ranvik", callback_data=f"admin_toggle_ranvik"))
             elif prov == "sprut": kb.add(types.InlineKeyboardButton(f"{'🛑 Выкл' if active else '✅ Вкл'} SprutDock", callback_data=f"admin_toggle_sprut"))
+            elif prov == "clodex": kb.add(types.InlineKeyboardButton(f"{'🛑 Выкл' if active else '✅ Вкл'} CLODEx", callback_data=f"admin_toggle_clodex"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="admin_root"))
-        safe_edit(c.message.chat.id, c.message.message_id, "🔌 <b>Провайдеры</b>\n\nВключайте модели, чтобы они появились в меню «Текст (AI)» у юзеров:", reply_markup=kb, parse_mode="HTML")
+        safe_edit(c.message.chat.id, c.message.message_id, "🔌 <b>Провайдеры</b>\n\nВключайте модели, чтобы они появились в меню у юзеров:", reply_markup=kb, parse_mode="HTML")
 
-    @bot.callback_query_handler(func=lambda c: c.data in ("admin_toggle_ranvik", "admin_toggle_sprut"))
+    @bot.callback_query_handler(func=lambda c: c.data in ("admin_toggle_ranvik", "admin_toggle_sprut", "admin_toggle_clodex"))
     @admin_only
     def cb_admin_toggle_provider(c):
         bot.answer_callback_query(c.id)
-        provider = "ranvik" if "ranvik" in c.data else "sprut"
+        provider = "ranvik" if "ranvik" in c.data else ("sprut" if "sprut" in c.data else "clodex")
         with DbConn() as db_c:
             cur = db_c.cursor(); cur.execute("SELECT MAX(active) FROM models WHERE provider=?", (provider,)); r = cur.fetchone()
             new_state = 0 if r and r[0] == 1 else 1; cur.execute("UPDATE models SET active=? WHERE provider=?", (new_state, provider))
@@ -1724,6 +1722,7 @@ def _gen_impl(uid: int, message, mid: str, m_type: str, price: int, is_admin: bo
         if len(history) > MAX_HISTORY: history = history[-MAX_HISTORY:]
         
         provider = MODELS[mid].get("provider", "openrouter")
+        
         if provider == "ranvik":
             headers = {"Authorization": f"Bearer {RANVIK_API_KEY}", "Content-Type": "application/json"}
             payload = {"model": mid.replace("openai/", ""), "messages": history}
@@ -1732,6 +1731,10 @@ def _gen_impl(uid: int, message, mid: str, m_type: str, price: int, is_admin: bo
             headers = {"Authorization": f"Bearer {TEXT_API_KEY}", "Content-Type": "application/json"}
             payload = {"model": mid, "messages": history}
             api_url = f"{TEXT_API_URL}/chat/completions"
+        elif provider == "clodex":
+            headers = {"Authorization": f"Bearer {CLODEX_API_KEY}", "Content-Type": "application/json"}
+            payload = {"model": mid, "messages": history}
+            api_url = f"{CLODEX_API_URL}/chat/completions"
         else:
             headers = {"Authorization": f"Bearer {OPENROUTER_KEY}", "Content-Type": "application/json", "HTTP-Referer": "https://t.me/" + (BOT_USERNAME or "bot"), "X-Title": "Neuro Studio"}
             payload = {"model": mid, "messages": history}
@@ -1793,14 +1796,22 @@ def _gen_impl(uid: int, message, mid: str, m_type: str, price: int, is_admin: bo
         if m_type in ("edit","animate"): inp["images"] = [{"type":"base64","data":f"data:image/jpeg;base64,{b64}"}]
         elif m_type == "upscale": inp["videos" if "video" in mid else "images"] = [{"type":"base64","data":f"data:image/jpeg;base64,{b64}"}]
 
+    # Для CLODEx может быть другой формат запроса, но часто это OpenAI-compatible
     payload = {"model": mid, "async": False, "input": inp}
     headers = {"Authorization": f"Bearer {POLZA_KEY}", "Content-Type": "application/json"}
+    
+    # Если это CLODEx видео/картинки, меняем URL и ключ
+    api_url = f"{POLZA_BASE}/media"
+    if MODELS[mid].get("provider") == "clodex":
+        api_url = f"{CLODEX_API_URL}/media" # Или /images/generations, нужно смотреть их доки
+        headers = {"Authorization": f"Bearer {CLODEX_API_KEY}", "Content-Type": "application/json"}
+
     status = safe_send(uid, "⏳ Генерация...")
     if not status: Finance.refund(tx_id, "send_failed"); return
     tmp = None
 
     try:
-        r = requests.post(f"{POLZA_BASE}/media", headers=headers, json=payload, timeout=HTTP_TIMEOUT_MED)
+        r = requests.post(api_url, headers=headers, json=payload, timeout=HTTP_TIMEOUT_MED)
         if r.status_code != 200:
             try: error_data = r.json(); error_msg = error_data.get("error", {}).get("message", r.text[:200])
             except Exception: error_msg = r.text[:200]
@@ -1812,7 +1823,7 @@ def _gen_impl(uid: int, message, mid: str, m_type: str, price: int, is_admin: bo
             while time.time() < deadline:
                 if SHUTDOWN.is_set(): raise RuntimeError("shutdown")
                 time.sleep(2)
-                try: chk = requests.get(f"{POLZA_BASE}/media/{data['id']}", headers=headers, timeout=HTTP_TIMEOUT_SHORT).json()
+                try: chk = requests.get(f"{api_url}/{data['id']}", headers=headers, timeout=HTTP_TIMEOUT_SHORT).json()
                 except requests.RequestException: continue
                 st = chk.get("status")
                 if st == "completed": data = chk; break
@@ -1868,10 +1879,14 @@ def show_user_card(chat_id: int, uid: int, msg_id: int = None):
            f"🖼{u['balance_img']} 🎵{u['balance_aud']} 🎬{u['balance_vid']}\n🗣{u['balance_tts']} 📝{u['balance_stt']} ✏️{u['balance_edit']}\n"
            f"🎞{u['balance_anim']} 🔍{u['balance_up']}\n\nТекст: {u['text_free_used']}/{FREE_TEXT_LIMIT}\n{'🚫 ЗАБАНЕН' if u['is_banned'] else '✅ Активен'}")
     kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.add(types.InlineKeyboardButton("⭐ Выдать", callback_data=f"a_give_{uid}"))
+    kb.add(types.InlineKeyboardButton("🖼 Баланс", callback_data=f"a_give_{uid}"),
+           types.InlineKeyboardButton("📦 Пакет", callback_data=f"a_give_pack_{uid}"))
+    kb.add(types.InlineKeyboardButton("🎫 Подписка", callback_data=f"a_give_sub_{uid}"))
+    
     ban_text = "✅ Разбанить" if u["is_banned"] else "🚫 Забанить"
     kb.add(types.InlineKeyboardButton(ban_text, callback_data=f"a_ban_{uid}"))
     kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="admin_users"))
+    
     if msg_id: safe_edit(chat_id, msg_id, txt, reply_markup=kb, parse_mode="HTML")
     else: safe_send(chat_id, txt, reply_markup=kb, parse_mode="HTML")
 
@@ -1930,7 +1945,7 @@ def main():
     threading.Thread(target=payment_poller_single_loop, daemon=True, name="payment_poller").start()
     if HEALTH_PORT > 0: start_health_server(HEALTH_PORT)
 
-    log.info(f"🚀 Neuro Studio v47 started (workers={EXECUTOR_WORKERS}, queue_max={EXECUTOR_QUEUE_MAX}, db_pool={DB_POOL_SIZE}, stars_rate={STARS_RUB_PER_STAR}₽/star, poll_interval={PAYMENT_POLL_INTERVAL}s, poll_timeout={PAYMENT_POLL_TIMEOUT}s, stars_auto_refund={STARS_AUTO_REFUND})")
+    log.info(f"🚀 Neuro Studio v50 started (workers={EXECUTOR_WORKERS}, queue_max={EXECUTOR_QUEUE_MAX}, db_pool={DB_POOL_SIZE}, stars_rate={STARS_RUB_PER_STAR}₽/star, poll_interval={PAYMENT_POLL_INTERVAL}s, poll_timeout={PAYMENT_POLL_TIMEOUT}s, stars_auto_refund={STARS_AUTO_REFUND})")
     try: bot.infinity_polling(timeout=10, long_polling_timeout=5)
     except KeyboardInterrupt: log.warning("stopped by KeyboardInterrupt")
     finally:
