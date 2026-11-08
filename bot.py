@@ -37,6 +37,25 @@ load_dotenv(override=False)
 # ==========================================================
 # ЛОГИРОВАНИЕ
 # ==========================================================
+LOG_JSON = os.getenv("LOG_JSON", "0") == "1"
+
+class _JsonFormatter(logging.Formatter):
+    def format(self, record):
+        return json.dumps({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+            "exc": self.formatException(record.exc_info) if record.exc_info else None,
+        }, ensure_ascii=False)
+
+def _setup_logging():
+    if LOG_JSON:
+        h = logging.StreamHandler(sys.stdout)
+        h.setFormatter(_JsonFormatter())
+        logging.basicConfig(level=logging.INFO, handlers=[h])
+    else:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 log = logging.getLogger("neuro")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
