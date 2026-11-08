@@ -1,12 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Нейро-Студия v57 — Multi-Provider + Grosh (USD) + FX Analyzer.
+Нейро-Студия v59 — Ultimate Multi-Provider & Grosh (USD/USDT) Release.
   - Все нейросети (Polza, CLODEx, SprutDock, Ranvik, OpenRouter).
-  - Grosh: цены в ₽, оплата в USD по курсу ЦБ РФ (кэш в БД).
-  - Анализатор USD/RUB в реальном времени (фоновый воркер).
+  - Grosh: оплата строго в USD/USDT (по документации API).
 """
 import os
-import re
 import time
 import base64
 import uuid
@@ -102,19 +100,13 @@ TEXT_API_URL   = os.getenv("TEXT_API_URL", "https://sprutdock.ru/v1")
 CLODEX_API_KEY = os.getenv("CLODEX_API_KEY", "")
 CLODEX_API_URL = os.getenv("CLODEX_API_URL", "https://api.clodex.xyz/v1")
 
-# GROSH WALLET
+# GROSH WALLET (Строго USD/USDT по API)
 GROSH_API_KEY  = os.getenv("GROSH_API_KEY", "")
 GROSH_API_URL  = os.getenv("GROSH_API_URL", "https://pay.grosh.me/api")
 
 STARS_RUB_PER_STAR = _env_float("STARS_RUB_PER_STAR", 2.0)
 STARS_AUTO_REFUND = _env_bool("STARS_AUTO_REFUND", True)
 TERMS_REQUIRED    = _env_bool("TERMS_REQUIRED", False)
-
-# FX ANALYZER
-FX_API_URL        = os.getenv("FX_API_URL", "https://www.cbr-xml-daily.ru/daily_json.js")
-FX_REFRESH_SEC    = _env_int("FX_REFRESH_SEC", 1800, minimum=60)
-FX_MARKUP_PCT     = _env_float("FX_MARKUP_PCT", 3.0)
-FX_FALLBACK_RATE  = _env_float("FX_FALLBACK_RATE", 95.0)
 
 REFUND_WINDOW_HOURS     = _env_int("REFUND_WINDOW_HOURS", 24, minimum=1)
 PAYMENT_POLL_MAX_ERRORS = _env_int("PAYMENT_POLL_MAX_ERRORS", 6, minimum=1)
@@ -191,8 +183,7 @@ ALLOWED_CDN = {
     "openrouter.ai", "api.ranvik.ru",
     "sprutdock.ru", "storage.sprutdock.ru", "cdn.sprutdock.ru",
     "clodex.xyz", "api.clodex.xyz", "cdn.clodex.xyz", "storage.clodex.xyz",
-    "grosh.me", "pay.grosh.me",
-    "cbr-xml-daily.ru",
+    "grosh.me", "pay.grosh.me"
 }
 
 _EXPECTED_CT = {
@@ -378,7 +369,7 @@ def fetch_media(url: str, max_bytes: int = FILE_MAX_MB * 1024 * 1024, m_type: st
     for attempt in range(2):
         try:
             with requests.get(url, timeout=(5, 15), allow_redirects=False, stream=True,
-                              headers={"User-Agent": "NeuroStudio/57 (+telegram)"}) as r:
+                              headers={"User-Agent": "NeuroStudio/59 (+telegram)"}) as r:
                 if 300 <= r.status_code < 400:
                     loc = r.headers.get("Location", "")
                     if not loc or _redirects >= 3 or not is_safe_url(loc): raise RuntimeError("unsafe redirect")
@@ -406,113 +397,6 @@ def download_tg_file(message) -> Optional[bytes]:
         if len(data) > FILE_MAX_MB * 1024 * 1024: return None
         return data
     except Exception: return None
-
-# ==========================================================
-# FX ANALYZER (USD/RUB realtime)
-# ==========================================================
-class FxAnalyzer:
-    """Курс USD/RUB с кэшем в БД и фоновым обновлением."""
-    _lock = threading.Lock()
-    _rate: float = 0.0
-    _ts: float = 0.0
-    _last_good_ts: float = 0.0
-
-    @classmethod
-    def _load_from_db(cls) -> Tuple[float, float]:
-        try:
-            with DbConn() as c:
-                cur = c.cursor()
-                cur.execute("SELECT rate, ts FROM currency_rates WHERE pair='USD_RUB' ORDER BY ts DESC LIMIT 1")
-                r = cur.fetchone()
-                if r: return float(r[0]), float(r[1])
-        except Exception:
-            pass
-        return 0.0, 0.0
-
-    @classmethod
-    def _save_to_db(cls, rate: float, ts: float):
-        try:
-            with DbConn() as c:
-                cur = c.cursor()
-                cur.execute("INSERT OR REPLACE INTO currency_rates(pair, rate, ts) VALUES(?,?,?)", ("USD_RUB", rate, ts))
-        except Exception:
-            log.exception("fx save")
-
-    @classmethod
-    def current(cls) -> float:
-        with cls._lock:
-            if cls._rate > 0: return cls._rate
-        rate, ts = cls._load_from_db()
-        with cls._lock:
-            if rate > 0:
-                cls._rate = rate; cls._ts = ts
-                return rate
-        return FX_FALLBACK_RATE
-
-    @classmethod
-    def rub_to_usd(cls, rub: int, markup_pct: float = None) -> float:
-        rate = cls.current()
-        if rate <= 0: rate = FX_FALLBACK_RATE
-        markup = FX_MARKUP_PCT if markup_pct is None else markup_pct
-        usd = float(rub) / rate
-        return round(usd * (1.0 + markup / 100.0), 2)
-
-    @classmethod
-    def usd_to_rub(cls, usd: float) -> float:
-        return round(float(usd) * cls.current(), 2)
-
-    @classmethod
-    def refresh(cls) -> bool:
-        try:
-            r = requests.get(FX_API_URL, timeout=HTTP_TIMEOUT_SHORT, headers={"User-Agent": "NeuroStudio/57"})
-            if r.status_code != 200:
-                log.warning(f"fx http {r.status_code}")
-                return False
-            j = r.json()
-            val = j.get("Valute", {}).get("USD", {}).get("Value")
-            if not val: 
-                log.warning("fx: no USD value")
-                return False
-            rate = float(val)
-            if rate < 10 or rate > 1000:
-                log.warning(f"fx: suspicious rate {rate}")
-                return False
-            ts = time.time()
-            with cls._lock:
-                cls._rate = rate
-                cls._ts = ts
-                cls._last_good_ts = ts
-            cls._save_to_db(rate, ts)
-            log.info(f"fx: USD/RUB = {rate:.4f} ({datetime.fromtimestamp(ts):%H:%M:%S})")
-            return True
-        except Exception as e:
-            log.warning(f"fx refresh failed: {e}")
-            return False
-
-    @classmethod
-    def status(cls) -> dict:
-        rate = cls.current()
-        with cls._lock:
-            ts = cls._ts
-            last_good = cls._last_good_ts
-        return {
-            "rate": rate,
-            "ts": ts,
-            "age_sec": int(time.time() - ts) if ts else None,
-            "last_good_ts": last_good,
-        }
-
-def start_fx_worker():
-    def loop():
-        # первый refresh сразу
-        try: FxAnalyzer.refresh()
-        except Exception: log.exception("fx first")
-        while not SHUTDOWN.is_set():
-            SHUTDOWN.wait(FX_REFRESH_SEC)
-            if SHUTDOWN.is_set(): return
-            try: FxAnalyzer.refresh()
-            except Exception: log.exception("fx loop")
-    threading.Thread(target=loop, daemon=True, name="fx").start()
 
 # ==========================================================
 # БАЗА ДАННЫХ
@@ -604,7 +488,6 @@ def init_db():
         _add_column_if_missing(cur, "payments", "idempotency_key", "TEXT DEFAULT ''")
         _add_column_if_missing(cur, "payments", "provider_charge_id", "TEXT DEFAULT ''")
         _add_column_if_missing(cur, "payments", "amount_usd", "REAL NOT NULL DEFAULT 0")
-        _add_column_if_missing(cur, "payments", "fx_rate", "REAL NOT NULL DEFAULT 0")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_payments_platega ON payments(platega_id) WHERE platega_id IS NOT NULL AND platega_id != ''")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_payments_invoice ON payments(invoice_payload) WHERE invoice_payload IS NOT NULL AND invoice_payload != ''")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_payments_idem ON payments(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key != ''")
@@ -618,12 +501,11 @@ def init_db():
         _add_column_if_missing(cur, "outbox", "next_try", "REAL NOT NULL DEFAULT 0")
         cur.execute('''CREATE TABLE IF NOT EXISTS payment_poll_state(platega_id TEXT PRIMARY KEY, errors INTEGER NOT NULL DEFAULT 0, next_try REAL NOT NULL DEFAULT 0, last_checked REAL NOT NULL DEFAULT 0)''')
         cur.execute('''CREATE TABLE IF NOT EXISTS payment_events(id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL, ref TEXT NOT NULL, event TEXT NOT NULL, details TEXT DEFAULT '', ts REAL NOT NULL)''')
-        cur.execute('''CREATE TABLE IF NOT EXISTS currency_rates(pair TEXT PRIMARY KEY, rate REAL NOT NULL, ts REAL NOT NULL)''')
 
         for mid, m in MODELS.items():
             cur.execute("INSERT OR IGNORE INTO models(model_id, active, price, cost, provider) VALUES(?,?,?,?,?)",
                         (mid, m["active"], m["price"], m["cost"], m.get("provider", "polza")))
-        for k, v in {"payments_on":"1","generations_on":"1","schema_version":"57"}.items():
+        for k, v in {"payments_on":"1","generations_on":"1","schema_version":"59"}.items():
             cur.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
 
 def get_user(uid: int) -> Optional[dict]:
@@ -773,7 +655,6 @@ class Finance:
                     if cur.rowcount != 1: raise InsufficientFunds(m_type)
                     charged = 1
                 elif paid_by == "sub":
-                    # слот уже списан в _charge, но помечаем charged=1 чтобы refund знал
                     charged = 2
                 cur.execute("INSERT INTO transactions(user_id,m_type,model_id,status,ts,charged) VALUES(?,?,?,?,?,?)", (uid, m_type, model_id, "PENDING", time.time(), charged))
                 tx_id = cur.lastrowid
@@ -804,7 +685,6 @@ class Finance:
                     col = BAL_FIELD.get(m_type)
                     if col: cur.execute(f"UPDATE users SET {col}={col}+1 WHERE user_id=?", (uid,))
                 elif charged == 2:
-                    # вернуть слот подписки
                     cur.execute("UPDATE users SET sub_used=MAX(0, sub_used-1) WHERE user_id=?", (uid,))
                 cur.execute("UPDATE transactions SET status='REFUNDED', resolved_ts=?, reason=? WHERE id=?", (time.time(), (reason or "")[:200], tx_id))
                 cur.execute("COMMIT")
@@ -840,7 +720,6 @@ def start_recovery_worker():
 # ОПЛАТА
 # ==========================================================
 def _apply_payment_tx(cur, kind: str, item_id: str, uid: int, payment_row_id: int):
-    # гарантируем, что юзер есть в БД (fallback для Grosh-вебхуков)
     cur.execute("INSERT OR IGNORE INTO users(user_id, created_at, last_seen) VALUES(?,?,?)", (uid, time.time(), time.time()))
     if kind == "package":
         p = PACKAGES.get(item_id)
@@ -912,27 +791,15 @@ def apply_payment_atomic_stars(invoice_payload: str, tg_charge_id: str, total_am
             log.exception(f"apply_payment_atomic_stars {invoice_payload}")
             return False, "exception"
 
-def apply_payment_atomic_grosh(tx_id: str, remote_amount: Optional[float] = None, remote_currency: Optional[str] = None) -> bool:
-    if not tx_id: return False
+def apply_payment_atomic_grosh(tx_id: str) -> bool:
     with DbConn() as c:
         cur = c.cursor()
         try:
             cur.execute("BEGIN IMMEDIATE")
-            cur.execute("SELECT id, user_id, package_id, kind, amount_usd FROM payments WHERE platega_id=? AND provider='grosh' AND status IN ('PENDING','EXPIRED')", (tx_id,))
+            cur.execute("SELECT id, user_id, package_id, kind FROM payments WHERE platega_id=? AND provider='grosh' AND status IN ('PENDING','EXPIRED')", (tx_id,))
             row = cur.fetchone()
             if not row: cur.execute("ROLLBACK"); return False
-            pay_id, uid, pid, kind, expected_usd = row
-            if remote_amount is not None and expected_usd and float(expected_usd) > 0:
-                try:
-                    got = float(remote_amount)
-                    exp = float(expected_usd)
-                    if abs(got - exp) > 0.05:
-                        log.error(f"grosh amount mismatch {tx_id}: local={exp} remote={got}")
-                        cur.execute("ROLLBACK"); return False
-                except (TypeError, ValueError):
-                    cur.execute("ROLLBACK"); return False
-            if remote_currency and remote_currency.upper() not in ("USD", "USDT"):
-                log.warning(f"grosh currency {remote_currency} for {tx_id}, expected USD")
+            pay_id, uid, pid, kind = row
             cur.execute("UPDATE payments SET status='PAID' WHERE id=? AND status IN ('PENDING','EXPIRED')", (pay_id,))
             if cur.rowcount != 1: cur.execute("ROLLBACK"); return False
             _apply_payment_tx(cur, kind, pid, uid, pay_id)
@@ -1030,36 +897,18 @@ def create_platega_payment(uid: int, item_id: str, amount: int, desc: str, kind:
         return True
     except Exception: log.exception(f"create_platega_payment {uid} {item_id}"); return False
 
-def create_grosh_payment(uid: int, item_id: str, amount_rub: int, desc: str, kind: str, prefix: str, idem_key: str = "") -> bool:
-    """
-    Grosh принимает USD. Конвертируем рубли в USD по курсу ЦБ + FX_MARKUP_PCT.
-    В payments пишем рубли (amount) и USD (amount_usd) + курс (fx_rate).
-    """
+def create_grosh_payment(uid: int, item_id: str, amount: int, desc: str, kind: str, prefix: str, idem_key: str = "") -> bool:
     if not GROSH_API_KEY or not GROSH_API_URL:
         log.error("GROSH_API_KEY или GROSH_API_URL не заданы")
         return False
-    if not RETURN_URL:
-        log.error("Grosh: RETURN_URL пуст — вебхук невозможен, платёж не создаём")
-        return False
 
-    fx_rate = FxAnalyzer.current()
-    if fx_rate <= 0:
-        log.error("Grosh: нет курса USD/RUB")
-        return False
-    amount_usd = FxAnalyzer.rub_to_usd(amount_rub)
-    if amount_usd <= 0:
-        log.error(f"Grosh: некорректная сумма {amount_rub}₽ → {amount_usd}$")
-        return False
-
-    # Grosh принимает amount в USD (валюту передачи в явном виде не документирует,
-    # но по факту работает в USD/USDT).
+    order_uuid = str(uuid.uuid4())
     payload = {
-        "amount": amount_usd,
-        "currency": "USD",
+        "amount": float(amount),
         "label": desc,
         "payload": f"{uid}_{prefix}_{item_id}",
         "webhook": f"{RETURN_URL}/webhook/grosh",
-        "success_url": RETURN_URL,
+        "success_url": RETURN_URL
     }
     headers = {
         "Authorization": f"Bearer {GROSH_API_KEY}",
@@ -1068,40 +917,30 @@ def create_grosh_payment(uid: int, item_id: str, amount_rub: int, desc: str, kin
     try:
         r = requests.post(f"{GROSH_API_URL}/payments", json=payload, headers=headers, timeout=HTTP_TIMEOUT_SHORT)
         if r.status_code not in (200, 201):
-            log.error(f"grosh error: {r.status_code} {r.text[:300]}")
+            log.error(f"grosh error: {r.status_code} {r.text[:200]}")
             return False
 
         j = r.json()
-        pay_url = j.get("url") or j.get("pay_url") or j.get("payment_url")
-        tx_id = j.get("id") or j.get("transaction_id")
+        pay_url = j.get("url") or j.get("websiteUrl")
+        tx_id = j.get("paymentId") or j.get("id") or order_uuid
 
         if not pay_url:
             log.error(f"grosh response missing url: {j}")
-            return False
-        if not tx_id:
-            # без реального id Grosh вебхук не сопоставить — не создаём платёж
-            log.error(f"grosh response missing id (no tx_id): {j}")
             return False
 
         with DbConn() as c:
             cur = c.cursor()
             try:
-                cur.execute("""INSERT INTO payments(user_id, package_id, amount, status, platega_id, ts, kind, provider, idempotency_key, amount_usd, fx_rate)
-                               VALUES(?,?,?,?,?,?,?, 'grosh', ?, ?, ?)""",
-                            (uid, item_id, int(amount_rub), "PENDING", str(tx_id), time.time(), kind, idem_key or "", float(amount_usd), float(fx_rate)))
+                cur.execute("""INSERT INTO payments(user_id, package_id, amount, status, platega_id, ts, kind, provider, idempotency_key, amount_usd)
+                               VALUES(?,?,?,?,?,?,?, 'grosh', ?, ?)""",
+                            (uid, item_id, amount, "PENDING", tx_id, time.time(), kind, idem_key or "", float(amount)))
             except sqlite3.IntegrityError:
                 log.warning(f"duplicate grosh tx {tx_id}")
                 return False
 
-        kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton(f"💳 Оплатить ${amount_usd:.2f} (Grosh)", url=pay_url))
-        notify(uid,
-               f"💳 {desc}\n"
-               f"К оплате: <b>{amount_rub}₽</b> ≈ <b>${amount_usd:.2f}</b>\n"
-               f"Курс: 1$ = {fx_rate:.2f}₽ (+{FX_MARKUP_PCT:.1f}%)\n\n"
-               f"🧾 Заказ: {tx_id}",
-               reply_markup=kb.to_dict())
-        log_ev(uid, "payment_created", f"grosh {kind}:{item_id} {tx_id} ${amount_usd}")
-        payment_event("grosh", str(tx_id), "created", f"user={uid} {kind}:{item_id} usd={amount_usd} fx={fx_rate}")
+        kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("💳 Оплатить (Grosh)", url=pay_url))
+        notify(uid, f"💳 {desc} — ${amount}.00\n\n🧾 Заказ: {tx_id}", reply_markup=kb.to_dict())
+        log_ev(uid, "payment_created", f"grosh {kind}:{item_id} {tx_id}")
         return True
     except Exception as e:
         log.exception(f"create_grosh_payment {uid} {item_id}: {e}")
@@ -1228,7 +1067,6 @@ def main_menu(uid: int):
     kb.add(types.InlineKeyboardButton("💰 Баланс", callback_data="menu_balance"), types.InlineKeyboardButton("🎫 Подписка", callback_data="menu_sub"))
     kb.add(types.InlineKeyboardButton("🛒 Купить", callback_data="menu_buy"), types.InlineKeyboardButton("📚 Работы", callback_data="menu_works"))
     kb.add(types.InlineKeyboardButton("🎁 Бонус дня", callback_data="menu_bonus"), types.InlineKeyboardButton("🏆 Задания", callback_data="menu_quest"))
-    kb.add(types.InlineKeyboardButton("💱 Курс USD", callback_data="menu_fx"))
     kb.add(types.InlineKeyboardButton("📄 Условия", callback_data="menu_terms"), types.InlineKeyboardButton("🔒 Приватность", callback_data="menu_privacy"))
     kb.add(types.InlineKeyboardButton("📞 Поддержка", url=SUPPORT_URL))
     if uid == ADMIN_ID: kb.add(types.InlineKeyboardButton("🛡 Админ", callback_data="admin_root"))
@@ -1282,19 +1120,7 @@ def register_handlers():
         safe_send(uid, f"👋 Привет, @{uname}!\n\nЯ — <b>Нейро-Студия</b>.{bonus}\n\nВыбери, что хочешь сгенерировать:", reply_markup=main_menu(uid), parse_mode="HTML")
 
     @bot.message_handler(commands=["help"])
-    def cmd_help(m): safe_send(m.chat.id, f"🤖 <b>Нейро-Студия</b>\n\n• /start — меню\n• /terms — условия\n• /privacy — политика\n• /refund — возврат\n• /delete_me — удалить данные\n• /fx — курс USD/RUB\n\nПоддержка: {SUPPORT_URL}", parse_mode="HTML", disable_web_page_preview=True)
-
-    @bot.message_handler(commands=["fx"])
-    def cmd_fx(m):
-        st = FxAnalyzer.status()
-        age = st["age_sec"]
-        age_str = "только что" if age is None or age < 60 else f"{age // 60} мин назад"
-        txt = (f"💱 <b>Курс USD/RUB</b>\n\n"
-               f"ЦБ РФ: <b>{st['rate']:.4f} ₽</b> за 1$\n"
-               f"Наценка при оплате: +{FX_MARKUP_PCT:.1f}%\n"
-               f"Итоговый: <b>{st['rate'] * (1 + FX_MARKUP_PCT/100):.4f} ₽</b> за 1$\n"
-               f"Обновлено: {age_str}")
-        safe_send(m.chat.id, txt, parse_mode="HTML")
+    def cmd_help(m): safe_send(m.chat.id, f"🤖 <b>Нейро-Студия</b>\n\n• /start — меню\n• /terms — условия\n• /privacy — политика\n• /refund — возврат\n• /delete_me — удалить данные\n\nПоддержка: {SUPPORT_URL}", parse_mode="HTML", disable_web_page_preview=True)
 
     @bot.message_handler(commands=["terms"])
     def cmd_terms(m):
@@ -1305,7 +1131,7 @@ def register_handlers():
             f"3. Возврат: в течение {REFUND_WINDOW_HOURS} ч. после оплаты. Для пакетов — пропорционально остатку. "
             f"Для подписок — пропорционально неиспользованным дням. Команда /refund.\n"
             "4. Возврат при техническом сбое генерации — автоматический.\n"
-            "5. Платежи через СБП (Platega), Telegram Stars и Grosh (USD по курсу ЦБ).\n"
+            "5. Платежи через СБП (Platega), Telegram Stars и Grosh (USD/USDT).\n"
             f"6. Поддержка: {SUPPORT_URL}\n"
             f"\n{TERMS_URL}"
         )
@@ -1328,7 +1154,7 @@ def register_handlers():
         for pid, pkg, amt, ts, kind, provider in rows:
             label = PACKAGES.get(pkg, {}).get("title") or SUB_TARIFFS.get(pkg, {}).get("title") or TEXT_SUB_TARIFFS.get(pkg, {}).get("title") or pkg
             prov = "⭐" if provider == "stars" else ("💵" if provider == "grosh" else "💳")
-            kb.add(types.InlineKeyboardButton(f"↩️ {prov} {label} — {amt}₽ ({datetime.fromtimestamp(ts):%d.%m %H:%M})", callback_data=f"refund_{pid}"))
+            kb.add(types.InlineKeyboardButton(f"↩️ {prov} {label} — {amt}₽/{amt}$ ({datetime.fromtimestamp(ts):%d.%m %H:%M})", callback_data=f"refund_{pid}"))
         kb.add(types.InlineKeyboardButton("⬅️ В меню", callback_data="menu_main"))
         safe_send(uid, "Выбери покупку для возврата:", reply_markup=kb)
 
@@ -1379,8 +1205,8 @@ def register_handlers():
                     if refund_stars(uid, charge_id): notify(uid, f"✅ Возврат {refund_amount}₽ (⭐ Stars) оформлен. Зачисление — в течение суток.")
                     else: notify(uid, f"⚠️ Возврат {refund_amount}₽ оформлен в базе, но Stars-возврат не удался. Напиши в поддержку: {SUPPORT_URL}"); notify(ADMIN_ID, f"⚠️ Stars refund failed: user={uid} pay#{pay_id} charge={charge_id} amt={refund_amount}₽")
                 elif provider == "grosh":
-                    notify(uid, f"✅ Заявка на возврат {refund_amount}₽ (Grosh) оформлена. Админ свяжется с вами для возврата в USDT.")
-                    notify(ADMIN_ID, f"↩️ REFUND GROSH: user {uid} pay#{pay_id} {refund_amount}₽ — верни вручную в USDT.")
+                    notify(uid, f"✅ Заявка на возврат ${refund_amount} (Grosh) оформлена. Админ свяжется с вами для возврата в USDT.")
+                    notify(ADMIN_ID, f"↩️ REFUND GROSH: user {uid} pay#{pay_id} ${refund_amount} — верни вручную в USDT.")
                 else: notify(uid, f"✅ Заявка на возврат {refund_amount}₽ оформлена. Админ свяжется с вами для возврата на карту."); notify(ADMIN_ID, f"↩️ REFUND: user {uid} pay#{pay_id} {refund_amount}₽ — верни вручную.")
                 return True, "✅ Возврат оформлен."
             except Exception:
@@ -1410,31 +1236,6 @@ def register_handlers():
     def cb_main(c):
         bot.answer_callback_query(c.id)
         safe_edit(c.message.chat.id, c.message.message_id, "Выбери, что хочешь сгенерировать:", reply_markup=main_menu(c.from_user.id))
-
-    @bot.callback_query_handler(func=lambda c: c.data == "menu_fx")
-    def cb_menu_fx(c):
-        bot.answer_callback_query(c.id)
-        st = FxAnalyzer.status()
-        age = st["age_sec"]
-        age_str = "только что" if age is None or age < 60 else f"{age // 60} мин назад"
-        eff = st['rate'] * (1 + FX_MARKUP_PCT / 100)
-        txt = (f"💱 <b>Курс USD/RUB (реальное время)</b>\n\n"
-               f"ЦБ РФ: <b>{st['rate']:.4f} ₽</b> за 1$\n"
-               f"Наценка (комиссия/волатильность): +{FX_MARKUP_PCT:.1f}%\n"
-               f"Эффективный курс для оплаты: <b>{eff:.4f} ₽</b> за 1$\n"
-               f"Обновлено: {age_str}\n\n"
-               f"<i>Курс обновляется автоматически каждые {FX_REFRESH_SEC // 60} мин. "
-               f"Оплата через Grosh производится в USD/USDT по этому курсу.</i>")
-        kb = types.InlineKeyboardMarkup()
-        kb.add(types.InlineKeyboardButton("🔄 Обновить", callback_data="menu_fx_refresh"))
-        kb.add(types.InlineKeyboardButton("⬅️ В меню", callback_data="menu_main"))
-        safe_edit(c.message.chat.id, c.message.message_id, txt, reply_markup=kb, parse_mode="HTML")
-
-    @bot.callback_query_handler(func=lambda c: c.data == "menu_fx_refresh")
-    def cb_menu_fx_refresh(c):
-        ok = FxAnalyzer.refresh()
-        bot.answer_callback_query(c.id, "✅ Курс обновлён." if ok else "⚠️ Не удалось обновить, используется последний.", show_alert=True)
-        cb_menu_fx(c)
 
     @bot.callback_query_handler(func=lambda c: c.data == "menu_text_sub")
     def cb_menu_text_sub(c):
@@ -1642,7 +1443,6 @@ def register_handlers():
             if m_type != "text": set_state(uid, "")
             return safe_send(m.chat.id, "❌ Запрещённый контент.")
 
-        # Скачиваем файл ОДИН раз, чтобы не качать повторно в ген-воркере
         file_bytes = None
         if m_type in FILE_REQUIRED:
             file_bytes = download_tg_file(m)
@@ -1691,7 +1491,6 @@ def register_handlers():
             return "free", lambda: incr_field(uid, "text_free_used", -1)
         can_sub, _ = sub_can_use(u)
         if can_sub and consume_sub_slot(uid, SUB_TARIFFS[u["sub_plan"]]["limit"]):
-            # возвращаем слот при фейле
             return "sub", lambda: incr_field(uid, "sub_used", -1)
         if m_type == "image" and take_free_image(uid): return "free", lambda: incr_field(uid, "free_image", 1)
         return "balance", noop
@@ -1783,7 +1582,7 @@ def register_handlers():
         kb = types.InlineKeyboardMarkup(row_width=1)
         kb.add(types.InlineKeyboardButton(f"✅ Подтвердить — {p['price']}₽", callback_data=f"payok_{pid}"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_buy"))
-        safe_edit(c.message.chat.id, c.message.message_id, f"🛒 <b>Подтверждение покупки</b>\n\nТовар: <b>{p['title']}</b>\nСумма: <b>{p['price']}₽</b>\n\nОплата через СБП, Telegram Stars или Grosh (USD по курсу).\nВозврат — /refund.", reply_markup=kb, parse_mode="HTML")
+        safe_edit(c.message.chat.id, c.message.message_id, f"🛒 <b>Подтверждение покупки</b>\n\nТовар: <b>{p['title']}</b>\nСумма: <b>{p['price']}₽</b>\n\nОплата через СБП, Telegram Stars или Grosh (USD).\nВозврат — /refund.", reply_markup=kb, parse_mode="HTML")
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("payok_"))
     def cb_pay_ok(c):
@@ -1793,9 +1592,7 @@ def register_handlers():
         kb = types.InlineKeyboardMarkup(row_width=2)
         kb.add(types.InlineKeyboardButton("💳 СБП (Platega)", callback_data=f"payrub_{pid}"),
                types.InlineKeyboardButton("⭐ Telegram Stars", callback_data=f"paystars_{pid}"))
-        if RETURN_URL and GROSH_API_KEY:
-            usd = FxAnalyzer.rub_to_usd(p["price"])
-            kb.add(types.InlineKeyboardButton(f"💵 Grosh (${usd:.2f})", callback_data=f"paygrosh_{pid}"))
+        kb.add(types.InlineKeyboardButton(f"💵 Grosh (${p['price']})", callback_data=f"paygrosh_{pid}"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data=f"pay_{pid}"))
         safe_edit(c.message.chat.id, c.message.message_id, f"Выбери способ оплаты для «{p['title']}» ({p['price']}₽):", reply_markup=kb)
 
@@ -1841,9 +1638,7 @@ def register_handlers():
         kb = types.InlineKeyboardMarkup(row_width=2)
         kb.add(types.InlineKeyboardButton("💳 СБП (Platega)", callback_data=f"subrub_{code}"),
                types.InlineKeyboardButton("⭐ Telegram Stars", callback_data=f"substars_{code}"))
-        if RETURN_URL and GROSH_API_KEY:
-            usd = FxAnalyzer.rub_to_usd(t["price"])
-            kb.add(types.InlineKeyboardButton(f"💵 Grosh (${usd:.2f})", callback_data=f"subgrosh_{code}"))
+        kb.add(types.InlineKeyboardButton(f"💵 Grosh (${t['price']})", callback_data=f"subgrosh_{code}"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data=f"sub_{code}"))
         safe_edit(c.message.chat.id, c.message.message_id, f"Выбери способ оплаты для «{t['title']}» ({t['price']}₽):", reply_markup=kb)
 
@@ -1917,36 +1712,8 @@ def register_handlers():
         kb.add(types.InlineKeyboardButton("🔍 Найти по ID", callback_data="admin_find"), types.InlineKeyboardButton("💳 Платежи", callback_data="admin_pays"))
         kb.add(types.InlineKeyboardButton("⚙️ Модели", callback_data="admin_models"), types.InlineKeyboardButton("📜 Логи", callback_data="admin_logs"))
         kb.add(types.InlineKeyboardButton("🔌 Провайдеры", callback_data="admin_providers"))
-        kb.add(types.InlineKeyboardButton("💱 FX (USD/RUB)", callback_data="admin_fx"))
         kb.add(types.InlineKeyboardButton("⬅️ В меню", callback_data="menu_main"))
         safe_edit(c.message.chat.id, c.message.message_id, "🛡 <b>Админ</b>", reply_markup=kb, parse_mode="HTML")
-
-    @bot.callback_query_handler(func=lambda c: c.data == "admin_fx")
-    @admin_only
-    def cb_admin_fx(c):
-        bot.answer_callback_query(c.id)
-        st = FxAnalyzer.status()
-        age = st["age_sec"]
-        age_str = "только что" if age is None or age < 60 else f"{age // 60} мин назад"
-        eff = st['rate'] * (1 + FX_MARKUP_PCT / 100)
-        txt = (f"💱 <b>FX-анализатор</b>\n\n"
-               f"Источник: <code>{FX_API_URL}</code>\n"
-               f"Курс ЦБ: <b>{st['rate']:.4f} ₽</b> за 1$\n"
-               f"Эффективный (с наценкой +{FX_MARKUP_PCT:.1f}%): <b>{eff:.4f} ₽</b>\n"
-               f"Обновлено: {age_str}\n"
-               f"Интервал: каждые {FX_REFRESH_SEC // 60} мин\n"
-               f"Fallback: {FX_FALLBACK_RATE:.2f} ₽")
-        kb = types.InlineKeyboardMarkup()
-        kb.add(types.InlineKeyboardButton("🔄 Обновить сейчас", callback_data="admin_fx_refresh"))
-        kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="admin_root"))
-        safe_edit(c.message.chat.id, c.message.message_id, txt, reply_markup=kb, parse_mode="HTML")
-
-    @bot.callback_query_handler(func=lambda c: c.data == "admin_fx_refresh")
-    @admin_only
-    def cb_admin_fx_refresh(c):
-        ok = FxAnalyzer.refresh()
-        bot.answer_callback_query(c.id, "✅ Обновлено." if ok else "⚠️ Ошибка, используется последний.")
-        cb_admin_fx(c)
 
     @bot.callback_query_handler(func=lambda c: c.data == "admin_providers")
     @admin_only
@@ -1969,7 +1736,6 @@ def register_handlers():
             cur = db_c.cursor(); cur.execute("SELECT MAX(active) FROM models WHERE provider=?", (provider,)); r = cur.fetchone()
             new_state = 0 if r and r[0] == 1 else 1; cur.execute("UPDATE models SET active=? WHERE provider=?", (new_state, provider))
         bot.answer_callback_query(c.id, f"{provider.upper()}: {'ВКЛ' if new_state else 'ВЫКЛ'}", show_alert=False)
-        # перерисовываем без повторного answer
         cb_admin_providers(c, _answer=False)
 
     @bot.callback_query_handler(func=lambda c: c.data == "admin_find")
@@ -2011,7 +1777,7 @@ def register_handlers():
         lines = []
         for u, p, a, s, pr, t, usd in rows:
             if pr == "grosh" and usd:
-                lines.append(f"• {u} | {p} | {a}₽ (${usd:.2f}) | {s} | {pr} | {datetime.fromtimestamp(t):%d.%m %H:%M}")
+                lines.append(f"• {u} | {p} | ${usd:.2f} | {s} | {pr} | {datetime.fromtimestamp(t):%d.%m %H:%M}")
             else:
                 lines.append(f"• {u} | {p} | {a}₽ | {s} | {pr} | {datetime.fromtimestamp(t):%d.%m %H:%M}")
         txt = "💳 <b>Платежи</b>\n\n" + ("\n".join(lines) if rows else "Пусто")
@@ -2245,7 +2011,6 @@ def _gen_impl(uid: int, message, mid: str, m_type: str, price: int, is_admin: bo
 
         if not body: raise RuntimeError("no image data")
 
-        # для upscale видео — расширение mp4 и kind video
         if m_type == "upscale" and "video" in mid:
             ext = ".mp4"
         else:
@@ -2316,10 +2081,6 @@ def start_health_server(port: int):
                     except Exception: ok = False
                 body = b'{"status":"ok"}' if ok else b'{"status":"degraded"}'
                 self.send_response(200 if ok else 503); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
-            elif self.path == "/fx":
-                st = FxAnalyzer.status()
-                body = json.dumps(st).encode()
-                self.send_response(200); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
             else: self.send_response(404); self.end_headers()
 
         def do_POST(self):
@@ -2333,14 +2094,14 @@ def start_health_server(port: int):
                     log.info(f"Grosh webhook: {data}")
 
                     status = (data.get("status") or "").lower()
-                    tx_id = data.get("id") or data.get("transaction_id")
-                    remote_amount = data.get("amount")
-                    remote_currency = data.get("currency")
+                    tx_id = data.get("paymentId") or data.get("id") or data.get("transaction_id")
 
                     if status in ("paid", "success", "completed") and tx_id:
-                        ok = apply_payment_atomic_grosh(str(tx_id), remote_amount, remote_currency)
+                        ok = apply_payment_atomic_grosh(str(tx_id))
                         if not ok:
-                            log.warning(f"grosh webhook not applied: tx={tx_id} amount={remote_amount}")
+                            log.warning(f"grosh webhook not applied: tx={tx_id} status={status} body={data}")
+                    else:
+                        log.info(f"grosh webhook ignored: status={status} tx={tx_id}")
 
                     self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
                 except Exception as e:
@@ -2391,12 +2152,11 @@ def main():
     except Exception: log.exception("recover_stuck_transactions")
 
     signal.signal(signal.SIGTERM, _shutdown_handler); signal.signal(signal.SIGINT, _shutdown_handler)
-    start_fx_worker()
     start_recovery_worker(); start_cleanup_worker(); start_notify_worker()
     threading.Thread(target=payment_poller_single_loop, daemon=True, name="payment_poller").start()
     if HEALTH_PORT > 0: start_health_server(HEALTH_PORT)
 
-    log.info(f"🚀 Neuro Studio v57 started (workers={EXECUTOR_WORKERS}, queue_max={EXECUTOR_QUEUE_MAX}, db_pool={DB_POOL_SIZE}, stars_rate={STARS_RUB_PER_STAR}₽/star, fx_markup={FX_MARKUP_PCT}%, fx_refresh={FX_REFRESH_SEC}s)")
+    log.info(f"🚀 Neuro Studio v59 started (workers={EXECUTOR_WORKERS}, queue_max={EXECUTOR_QUEUE_MAX}, db_pool={DB_POOL_SIZE}, stars_rate={STARS_RUB_PER_STAR}₽/star)")
     try: bot.infinity_polling(timeout=10, long_polling_timeout=5)
     except KeyboardInterrupt: log.warning("stopped by KeyboardInterrupt")
     finally:
