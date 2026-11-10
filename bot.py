@@ -2225,6 +2225,7 @@ def _gen_impl(uid: int, message, mid: str, m_type: str, price: int, is_admin: bo
             url = data["url"]
 
         if url:
+            log.info(f"🔥 POLZA URL: {url}")
             body = fetch_media(url, m_type=m_type)
 
         if not body: raise RuntimeError("no image data")
