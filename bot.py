@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Нейро-Студия v70 — Winter Edition ❄️ FULL
-Стриминг (фикс 504), автофолбэк при цензоре, всё по кнопкам.
-Модели — ровно те, что были в оригинале.
+Стриминг (фикс 504), автофолбэк при цензоре, миграции БД, всё по кнопкам.
 """
 import os, time, base64, uuid, socket, ipaddress, sqlite3, logging, threading, signal, json, sys, queue, http.server, re, io, hmac, hashlib
 from datetime import datetime, timezone
@@ -95,7 +94,7 @@ ALLOWED_CDN = {"polza.ai", "cdn.polza.ai", "storage.polza.ai", "openrouter.ai", 
 EXPECTED_CT = {"image": ("image/",), "edit": ("image/",), "audio": ("audio/",), "video": ("video/",)}
 
 # ==========================================================
-# МОДЕЛИ — РОВНО КАК В ОРИГИНАЛЕ
+# МОДЕЛИ
 # ==========================================================
 MODELS = {
     "openai/gpt-image-1.5": {"name":"GPT Image 1.5", "type":"image", "price":7, "provider":"polza"},
@@ -193,11 +192,37 @@ class DbConn:
     def __enter__(self): self.conn = Db.acquire(); return self.conn
     def __exit__(self, *a): Db.release(self.conn); return False
 
+def _migrate_table(cur, table, migrations):
+    """Универсальная миграция: добавляет недостающие колонки."""
+    cur.execute(f"PRAGMA table_info({table})")
+    existing = {row[1] for row in cur.fetchall()}
+    if not existing:
+        return
+    for col, ddl in migrations:
+        if col not in existing:
+            try:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+                log.info(f"✅ Миграция: {table}.{col}")
+            except Exception as e:
+                log.warning(f"⚠️ Миграция {table}.{col}: {e}")
+
 def init_db():
     os.makedirs(DATA_DIR, exist_ok=True)
     with DbConn() as c:
         cur = c.cursor()
-        cur.execute('''CREATE TABLE IF NOT EXISTS users(user_id INTEGER PRIMARY KEY, username TEXT, is_banned INTEGER DEFAULT 0, balance_img INTEGER DEFAULT 0, balance_aud INTEGER DEFAULT 0, balance_vid INTEGER DEFAULT 0, balance_tts INTEGER DEFAULT 0, balance_stt INTEGER DEFAULT 0, balance_edit INTEGER DEFAULT 0, balance_anim INTEGER DEFAULT 0, balance_up INTEGER DEFAULT 0, text_free_used INTEGER DEFAULT 0, sub_plan TEXT DEFAULT '', sub_until REAL DEFAULT 0, sub_used INTEGER DEFAULT 0, sub_tokens_used INTEGER DEFAULT 0, state TEXT DEFAULT '', temp_model_id TEXT DEFAULT '', temp_price INTEGER DEFAULT 0, admin_state TEXT DEFAULT '', admin_target INTEGER DEFAULT 0, admin_ts REAL DEFAULT 0, free_image INTEGER DEFAULT 0, onboarded INTEGER DEFAULT 0, last_seen REAL DEFAULT 0, created_at REAL DEFAULT 0, consent_at REAL DEFAULT 0, consent_version TEXT DEFAULT '', api_day TEXT DEFAULT '', api_calls INTEGER DEFAULT 0)''')
+
+        # ===== БАЗОВЫЕ ТАБЛИЦЫ =====
+        cur.execute('''CREATE TABLE IF NOT EXISTS users(
+            user_id INTEGER PRIMARY KEY, username TEXT, is_banned INTEGER DEFAULT 0,
+            balance_img INTEGER DEFAULT 0, balance_aud INTEGER DEFAULT 0, balance_vid INTEGER DEFAULT 0,
+            balance_tts INTEGER DEFAULT 0, balance_stt INTEGER DEFAULT 0, balance_edit INTEGER DEFAULT 0,
+            balance_anim INTEGER DEFAULT 0, balance_up INTEGER DEFAULT 0, text_free_used INTEGER DEFAULT 0,
+            sub_plan TEXT DEFAULT '', sub_until REAL DEFAULT 0, sub_used INTEGER DEFAULT 0,
+            sub_tokens_used INTEGER DEFAULT 0, state TEXT DEFAULT '', temp_model_id TEXT DEFAULT '',
+            temp_price INTEGER DEFAULT 0, admin_state TEXT DEFAULT '', admin_target INTEGER DEFAULT 0,
+            admin_ts REAL DEFAULT 0, free_image INTEGER DEFAULT 0, onboarded INTEGER DEFAULT 0,
+            last_seen REAL DEFAULT 0, created_at REAL DEFAULT 0, consent_at REAL DEFAULT 0,
+            consent_version TEXT DEFAULT '', api_day TEXT DEFAULT '', api_calls INTEGER DEFAULT 0)''')
         cur.execute('''CREATE TABLE IF NOT EXISTS api_keys(key TEXT PRIMARY KEY, user_id INTEGER, created_at REAL, expires_at REAL)''')
         cur.execute('''CREATE TABLE IF NOT EXISTS api_balance(user_id INTEGER PRIMARY KEY, balance REAL DEFAULT 0)''')
         cur.execute('''CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, package_id TEXT, amount INTEGER, status TEXT, platega_id TEXT, ts REAL, kind TEXT, provider TEXT, invoice_payload TEXT, stars_amount INTEGER DEFAULT 0, refunded_at REAL DEFAULT 0, idempotency_key TEXT, provider_charge_id TEXT, amount_usd REAL)''')
@@ -212,11 +237,54 @@ def init_db():
         cur.execute('''CREATE TABLE IF NOT EXISTS multi_rooms(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, name TEXT, models TEXT, ts REAL)''')
         cur.execute('''CREATE TABLE IF NOT EXISTS currency_rates(pair TEXT PRIMARY KEY, rate REAL, ts REAL)''')
         cur.execute('''CREATE TABLE IF NOT EXISTS models(model_id TEXT PRIMARY KEY, active INTEGER DEFAULT 1, price INTEGER DEFAULT 0, cost INTEGER DEFAULT 0, provider TEXT DEFAULT '')''')
+
+        # ===== МИГРАЦИИ =====
+        _migrate_table(cur, "users", [
+            ("consent_at", "REAL DEFAULT 0"),
+            ("consent_version", "TEXT DEFAULT ''"),
+            ("api_day", "TEXT DEFAULT ''"),
+            ("api_calls", "INTEGER DEFAULT 0"),
+            ("balance_up", "INTEGER DEFAULT 0"),
+            ("balance_edit", "INTEGER DEFAULT 0"),
+            ("balance_anim", "INTEGER DEFAULT 0"),
+            ("balance_aud", "INTEGER DEFAULT 0"),
+            ("is_banned", "INTEGER DEFAULT 0"),
+            ("onboarded", "INTEGER DEFAULT 0"),
+            ("free_image", "INTEGER DEFAULT 0"),
+            ("last_seen", "REAL DEFAULT 0"),
+            ("created_at", "REAL DEFAULT 0"),
+            ("state", "TEXT DEFAULT ''"),
+            ("temp_model_id", "TEXT DEFAULT ''"),
+            ("temp_price", "INTEGER DEFAULT 0"),
+            ("admin_state", "TEXT DEFAULT ''"),
+            ("admin_target", "INTEGER DEFAULT 0"),
+            ("admin_ts", "REAL DEFAULT 0"),
+            ("text_free_used", "INTEGER DEFAULT 0"),
+            ("sub_plan", "TEXT DEFAULT ''"),
+            ("sub_until", "REAL DEFAULT 0"),
+            ("sub_used", "INTEGER DEFAULT 0"),
+            ("sub_tokens_used", "INTEGER DEFAULT 0"),
+            ("balance_img", "INTEGER DEFAULT 0"),
+            ("balance_vid", "INTEGER DEFAULT 0"),
+            ("balance_tts", "INTEGER DEFAULT 0"),
+            ("balance_stt", "INTEGER DEFAULT 0"),
+        ])
+        _migrate_table(cur, "payments", [
+            ("amount_usd", "REAL"),
+            ("provider_charge_id", "TEXT"),
+            ("idempotency_key", "TEXT"),
+            ("invoice_payload", "TEXT"),
+        ])
+
+        # ===== ДЕФОЛТЫ =====
         for m_id, m in MODELS.items():
             cur.execute("INSERT OR IGNORE INTO models(model_id, active, price, cost, provider) VALUES(?,?,?,?,?)", (m_id, 1, m["price"], 0, m["provider"]))
         for k, v in {"payments_on":"1", "schema_version":"70"}.items():
             cur.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
 
+# ==========================================================
+# ХЕЛПЕРЫ БД
+# ==========================================================
 def get_user(uid):
     with DbConn() as c:
         cur = c.cursor()
@@ -327,7 +395,7 @@ def anti_flood(uid, min_sec=2):
         return True
 
 # ==========================================================
-# AI — СТРИМИНГ + РЕТРАИ + ФОЛБЭК
+# AI — СТРИМИНГ
 # ==========================================================
 def _request_with_retry(method, url, headers, json_body=None, files=None, data=None, timeout=HTTP_TIMEOUT_LONG, attempts=3):
     for i in range(attempts):
@@ -690,9 +758,8 @@ def show_main_menu(uid):
            types.InlineKeyboardButton("💳 Пополнить", callback_data="menu_topup"))
     kb.add(types.InlineKeyboardButton("🔑 API", callback_data="menu_api"),
            types.InlineKeyboardButton("🆘 Поддержка", url=SUPPORT_URL))
-    if TERMS_URL or PRIVACY_URL:
-        if TERMS_URL: kb.add(types.InlineKeyboardButton("📄 Соглашение", url=TERMS_URL))
-        if PRIVACY_URL: kb.add(types.InlineKeyboardButton("🔒 Политика", url=PRIVACY_URL))
+    if TERMS_URL: kb.add(types.InlineKeyboardButton("📄 Соглашение", url=TERMS_URL))
+    if PRIVACY_URL: kb.add(types.InlineKeyboardButton("🔒 Политика", url=PRIVACY_URL))
     if uid == ADMIN_ID:
         kb.add(types.InlineKeyboardButton("🛡 Админ", callback_data="admin_root"))
     safe_photo(
@@ -740,10 +807,14 @@ def register_handlers():
     @bot.callback_query_handler(func=lambda c: c.data == "consent_yes")
     def cb_consent(c):
         uid = c.from_user.id
-        upd(uid, consent_at=time.time(), consent_version=CONSENT_VERSION, onboarded=1)
-        log_ev(uid, "consent", CONSENT_VERSION)
-        bot.answer_callback_query(c.id, "✅ Согласие принято!")
-        show_main_menu(uid)
+        try:
+            upd(uid, consent_at=time.time(), consent_version=CONSENT_VERSION, onboarded=1)
+            log_ev(uid, "consent", CONSENT_VERSION)
+            bot.answer_callback_query(c.id, "✅ Согласие принято!")
+            show_main_menu(uid)
+        except Exception as e:
+            log.error(f"consent fail: {e}")
+            bot.answer_callback_query(c.id, "❌ Ошибка. Попробуй /start", show_alert=True)
 
     @bot.message_handler(commands=["terms"])
     def cmd_terms(m):
@@ -774,7 +845,6 @@ def register_handlers():
         bot.answer_callback_query(c.id)
         show_main_menu(c.from_user.id)
 
-    # ===== FABLE =====
     @bot.callback_query_handler(func=lambda c: c.data == "new_claude")
     def cb_new_claude(c):
         if not anti_flood(c.from_user.id): return bot.answer_callback_query(c.id, "⏳ Подожди 2 сек")
@@ -788,7 +858,6 @@ def register_handlers():
             f"🧠 Бесплатных: {u.get('text_free_used',0)}/{FREE_TEXT_LIMIT}\n\n"
             "✍️ Напиши свой вопрос:", parse_mode="Markdown")
 
-    # ===== КАРТИНКИ =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_images")
     def cb_images(c):
         bot.answer_callback_query(c.id)
@@ -814,7 +883,6 @@ def register_handlers():
             f"🎟 Баланс: {u.get('balance_img',0)} картинок\n\n"
             "✍️ Напиши промпт:", parse_mode="Markdown")
 
-    # ===== ВИДЕО =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_video")
     def cb_video(c):
         bot.answer_callback_query(c.id)
@@ -837,7 +905,6 @@ def register_handlers():
             f"🎬 **{VIDEO_MODELS[mid]['name']}**\n💰 {VIDEO_MODELS[mid]['price']}₽\n\n"
             "✍️ Опиши видео:", parse_mode="Markdown")
 
-    # ===== TTS/STT =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_tts")
     def cb_tts(c):
         bot.answer_callback_query(c.id)
@@ -856,7 +923,6 @@ def register_handlers():
             f"🎙 **Расшифровка** ❄️\n\n🎟 Баланс: {u.get('balance_stt',0)}\n\n🎤 Отправь голосовое:",
             parse_mode="Markdown")
 
-    # ===== UPSCALE/EDIT/ANIM =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_upscale")
     def cb_upscale(c):
         bot.answer_callback_query(c.id)
@@ -884,7 +950,6 @@ def register_handlers():
             f"🎞 **Анимация** ❄️\n\n🎟 Баланс: {u.get('balance_anim',0)}\n\n📤 Отправь картинку:",
             parse_mode="Markdown")
 
-    # ===== ПОДПИСКИ =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_subs")
     def cb_subs(c):
         bot.answer_callback_query(c.id)
@@ -911,7 +976,6 @@ def register_handlers():
             f"💳 **Платёж создан**\n\n📝 {t['title']}\n💰 {t['price']}₽\n🎁 {t['tokens']:,} токенов",
             reply_markup=kb, parse_mode="Markdown")
 
-    # ===== БАЛАНС/ПОПОЛНЕНИЕ =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_balance")
     def cb_balance(c):
         bot.answer_callback_query(c.id)
@@ -963,7 +1027,6 @@ def register_handlers():
         elif st == "failed": bot.answer_callback_query(c.id, "❌ Не прошёл", show_alert=True)
         else: bot.answer_callback_query(c.id, "⏳ Ещё не оплачено", show_alert=True)
 
-    # ===== АГЕНТЫ =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_agents")
     def cb_agents(c):
         bot.answer_callback_query(c.id)
@@ -979,7 +1042,6 @@ def register_handlers():
         bot.answer_callback_query(c.id, "Напиши вопрос агенту!", show_alert=True)
         upd(c.from_user.id, state="agent_wait_prompt")
 
-    # ===== ПАМЯТЬ =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_memory")
     def cb_memory(c):
         bot.answer_callback_query(c.id)
@@ -1000,7 +1062,6 @@ def register_handlers():
             db_c.cursor().execute("DELETE FROM chat_history WHERE user_id=?", (c.from_user.id,))
         bot.answer_callback_query(c.id, "🧹 Очищено!", show_alert=True)
 
-    # ===== МАРКЕТПЛЕЙС =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_market")
     def cb_market(c):
         bot.answer_callback_query(c.id)
@@ -1033,7 +1094,6 @@ def register_handlers():
         bot.answer_callback_query(c.id)
         safe_send(c.from_user.id, f"📝 **{title}**\n\n<code>{prompt}</code>", parse_mode="HTML")
 
-    # ===== DARK GPT =====
     @bot.callback_query_handler(func=lambda c: c.data == "cat_dark")
     def cb_dark(c):
         bot.answer_callback_query(c.id)
@@ -1041,7 +1101,6 @@ def register_handlers():
         safe_photo(c.from_user.id, IMG_TEXT,
             "🩸 **DarkGPT** ❄️\n\nБез цензуры.\n\n✍️ Напиши вопрос:", parse_mode="Markdown")
 
-    # ===== API =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_api")
     def cb_api(c):
         bot.answer_callback_query(c.id)
@@ -1064,7 +1123,6 @@ def register_handlers():
         safe_photo(m.chat.id, IMG_BAL,
             f"✅ <code>{key}</code>\n\nДействует 30 дней.", parse_mode="HTML")
 
-    # ===== АДМИНКА =====
     @bot.callback_query_handler(func=lambda c: c.data == "admin_root")
     def cb_admin(c):
         if c.from_user.id != ADMIN_ID: return bot.answer_callback_query(c.id, "⛔", show_alert=True)
@@ -1135,7 +1193,6 @@ def register_handlers():
         upd(c.from_user.id, state="admin_give_wait")
         safe_send(c.from_user.id, "🎁 Формат: `ID поле количество`\n\nполя: img/vid/tts/stt/edit/anim/up\n\nПример: `123456 img 50`", parse_mode="Markdown")
 
-    # ===== УНИВЕРСАЛЬНЫЙ ТЕКСТ =====
     @bot.message_handler(content_types=["text"])
     def handle_text(m):
         uid = m.from_user.id
@@ -1182,7 +1239,7 @@ def register_handlers():
         if state == "fable_wait":
             if not anti_flood(uid): return safe_send(uid, "⏳ Подожди 2 сек")
             upd(uid, state="")
-            status = safe_send(uid, "❄️ Fable 5.2 думает (стриминг)...")
+            status = safe_send(uid, "❄️ Fable 5.2 думает...")
             ans = gen_text(uid, "claude-fable-5.2", text)
             try: bot.delete_message(uid, status.message_id)
             except: pass
@@ -1275,7 +1332,6 @@ def register_handlers():
         if state in ("upscale_wait", "edit_wait", "anim_wait"):
             return safe_send(uid, "📤 Отправь картинку (не текст).")
 
-        # обычный диалог
         if not anti_flood(uid): return safe_send(uid, "⏳ Подожди 2 сек")
         status = safe_send(uid, "❄️ Думаю...")
         ans = gen_text(uid, "gpt-6-astra", text)
@@ -1283,7 +1339,6 @@ def register_handlers():
         except: pass
         safe_send(uid, ans[:4000])
 
-    # ===== ФОТО =====
     @bot.message_handler(content_types=["photo"])
     def handle_photo(m):
         uid = m.from_user.id
@@ -1320,7 +1375,6 @@ def register_handlers():
             add_balance(uid, field, 1)
             safe_send(uid, f"❌ Ошибка: {e}")
 
-    # ===== ГОЛОС/АУДИО =====
     @bot.message_handler(content_types=["voice", "audio", "video_note"])
     def handle_audio(m):
         uid = m.from_user.id
@@ -1357,7 +1411,7 @@ def register_handlers():
 # MAIN
 # ==========================================================
 def main():
-    global bot, GEN_EXECUTOR, PAY_EXECUTOR, WORKS_EXECUTOR, QUEUE_SEM
+    global bot
     _setup_logging()
     if not TOKEN or not POLZA_KEY:
         raise SystemExit("BOT_TOKEN / POLZA_KEY не заданы")
@@ -1365,10 +1419,6 @@ def main():
     Db.init(os.path.join(DATA_DIR, "media_bot.db"), DB_POOL_SIZE)
     init_db()
     bot = telebot.TeleBot(TOKEN, threaded=True)
-    GEN_EXECUTOR = ThreadPoolExecutor(max_workers=8)
-    PAY_EXECUTOR = ThreadPoolExecutor(max_workers=4)
-    WORKS_EXECUTOR = ThreadPoolExecutor(max_workers=2)
-    QUEUE_SEM = threading.BoundedSemaphore(32)
     register_handlers()
     signal.signal(signal.SIGTERM, lambda s, f: SHUTDOWN.set())
     signal.signal(signal.SIGINT, lambda s, f: SHUTDOWN.set())
