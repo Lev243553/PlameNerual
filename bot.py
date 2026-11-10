@@ -1349,7 +1349,7 @@ def register_handlers():
     def _charge(uid, u, m_type) -> Tuple[Optional[str], Callable[[], None]]:
         noop = lambda: None
         if uid == ADMIN_ID: return "admin", noop
-        if m_type == "text" and u.get("temp_model_id") == claude-fable-5-2":
+        if m_type == "text" and u.get("temp_model_id") == "claude-fable-5-2":
             return "balance", noop
         if m_type == "dark_gpt":
             if sub_active(u) and u["sub_plan"] == "dark_gpt": return "sub", noop
