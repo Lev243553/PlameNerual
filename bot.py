@@ -1216,6 +1216,7 @@ def register_handlers():
     @bot.message_handler(commands=["start"])
     def start(m):
         uid = m.from_user.id; uname = m.from_user.username or f"id{uid}"; ref = 0
+        if uid == ADMIN_ID: upd(uid, admin_state="", admin_target=0, admin_ts=0)
         parts = (m.text or "").split()
         if len(parts) > 1 and parts[1].startswith("ref_"):
             try:
@@ -1363,6 +1364,7 @@ def register_handlers():
     @bot.callback_query_handler(func=lambda c: c.data == "menu_main")
     def cb_main(c):
         bot.answer_callback_query(c.id)
+        if c.from_user.id == ADMIN_ID: upd(c.from_user.id, admin_state="", admin_target=0, admin_ts=0)
         safe_edit(c.message.chat.id, c.message.message_id, "Выбери, что хочешь сгенерировать:", reply_markup=main_menu(c.from_user.id))
 
     @bot.callback_query_handler(func=lambda c: c.data == "menu_text_sub")
