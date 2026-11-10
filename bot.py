@@ -1533,8 +1533,15 @@ def register_handlers():
         kb.add(types.InlineKeyboardButton("📊 Дашборд", callback_data="admin_dash"), types.InlineKeyboardButton("👥 Юзеры", callback_data="admin_users"))
         kb.add(types.InlineKeyboardButton("🔍 Найти по ID", callback_data="admin_find"), types.InlineKeyboardButton("💳 Платежи", callback_data="admin_pays"))
         kb.add(types.InlineKeyboardButton("⚙️ Модели", callback_data="admin_models"), types.InlineKeyboardButton("📜 Логи", callback_data="admin_logs"))
+        kb.add(types.InlineKeyboardButton("💰 API Баланс", callback_data="admin_api_balance"))
         kb.add(types.InlineKeyboardButton("🔌 Провайдеры", callback_data="admin_providers")); kb.add(types.InlineKeyboardButton("🔑 Выдать API", callback_data="admin_api_give")); kb.add(types.InlineKeyboardButton("⬅️ В меню", callback_data="menu_main"))
         safe_edit(c.message.chat.id, c.message.message_id, "🛡 <b>Админ</b>", reply_markup=kb, parse_mode="HTML")
+    @bot.callback_query_handler(func=lambda c: c.data == "admin_api_balance") 
+    @admin_only
+    def cb_admin_api_balance(c):
+        bot.answer_callback_query(c.id)
+        upd(ADMIN_ID, admin_state="api_balance_uid", admin_target=0, admin_ts=time.time())
+        safe_send(c.message.chat.id, "Введи <b>ID пользователя</b>, кому выдать API-баланс:", parse_mode="HTML")
 
     @bot.callback_query_handler(func=lambda c: c.data == "admin_api_give")
     @admin_only
@@ -1550,11 +1557,6 @@ def register_handlers():
         safe_send(c.message.chat.id, f"✅ Ключ выдан!\n\nID: <code>{target_uid}</code>\nКлюч: <code>{key}</code>\nСрок: {days} дней", parse_mode="HTML")
         notify(target_uid, f"🔑 <b>Вам выдан API-ключ!</b>\n\nВаш ключ: <code>{key}</code>\nДействует {days} дней.\n\nПерейдите в меню «🔑 API Доступ», чтобы скопировать его и увидеть документацию.")
         upd(ADMIN_ID, admin_state="", admin_target=0, admin_ts=0); cb_admin_root(c)
-
-    @bot.callback_query_handler(func=lambda c: c.data == "admin_providers")
-    @admin_only
-    def cb_admin_providers(c, _answer: bool = True):
-        if _answer: bot.answer_callback_query(c.id)
         with DbConn() as db_c:
             cur = db_c.cursor(); cur.execute("SELECT provider, MAX(active) FROM models GROUP BY provider"); rows = cur.fetchall()
         kb = types.InlineKeyboardMarkup(row_width=1)
@@ -1820,6 +1822,22 @@ def show_user_card(chat_id: int, uid: int, msg_id: int = None):
     ban_text = "✅ Разбанить" if u["is_banned"] else "🚫 Забанить"; kb.add(types.InlineKeyboardButton(ban_text, callback_data=f"a_ban_{uid}")); kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="admin_users"))
     if msg_id: safe_edit(chat_id, msg_id, txt, reply_markup=kb, parse_mode="HTML")
     else: safe_send(chat_id, txt, reply_markup=kb, parse_mode="HTML")
+if u["admin_state"] == "api_balance_uid":
+    try: target_uid = int((m.text or "").strip())
+    except ValueError: return safe_send(m.chat.id, "❌ Введи только цифры (ID).")
+    upd(ADMIN_ID, admin_state=f"api_balance_sum_{target_uid}", admin_ts=time.time())
+    return safe_send(m.chat.id, f"Введи сумму в рублях для ID {target_uid}:")
+    
+if u["admin_state"].startswith("api_balance_sum_"):
+    target_uid = int(u["admin_state"].split("_")[3])
+    try: amount = float((m.text or "").strip())
+    except ValueError: return safe_send(m.chat.id, "❌ Введи число.")
+    
+    with DbConn() as db_c:
+        db_c.cursor().execute("INSERT INTO api_balance(user_id, balance) VALUES(?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?", (target_uid, amount, amount))
+    upd(ADMIN_ID, admin_state="", admin_ts=0)
+    safe_send(m.chat.id, f"✅ Начислено {amount} ₽ API-баланса пользователю {target_uid}")
+    return
 
 def start_health_server(port: int):
     class H(http.server.BaseHTTPRequestHandler):
