@@ -301,7 +301,7 @@ def fetch_media(url: str, max_bytes: int = FILE_MAX_MB * 1024 * 1024, m_type: st
     if not is_safe_url(url): raise RuntimeError("unsafe url")
     for attempt in range(2):
         try:
-            with requests.get(url, timeout=(5, 30), allow_redirects=False, stream=True, headers={"User-Agent": "NeuroStudio/67 (+telegram)"}) as r:
+            with requests.get(url, timeout=(5, 90), allow_redirects=False, stream=True, headers={"User-Agent": "NeuroStudio/67 (+telegram)"}) as r:
                 if 300 <= r.status_code < 400:
                     loc = r.headers.get("Location", "")
                     if not loc or _redirects >= 3 or not is_safe_url(loc): raise RuntimeError("unsafe redirect")
