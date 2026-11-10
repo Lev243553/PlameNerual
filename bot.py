@@ -211,7 +211,7 @@ MODELS = {
     "anthropic/claude-haiku-5.5": {"name":"Claude Haiku (R)", "type":"text", "price":3, "cost":0.0, "active":0, "provider":"ranvik"},
     "nvidia/nemotron-3-ultra-550b-a55b:free": {"name":"Nemotron 3 Ultra", "type":"text", "price":0, "cost":0.0, "active":1, "provider":"openrouter"},
     "google/gemma-4-31b-it:free": {"name":"Gemma 4 31B", "type":"text", "price":0, "cost":0.0, "active":1, "provider":"openrouter"},
-    "claude-fable-5.2":                   {"name":"Claude Fable 5.2 (CX)", "type":"text", "price":5, "cost":0.0, "active":1, "provider":"clodex"},
+    "claude-fable-5-2":                   {"name":"Claude Fable 5.2 (CX)", "type":"text", "price":5, "cost":0.0, "active":1, "provider":"clodex"},
 }
 
 PACKAGES = {
@@ -1204,7 +1204,7 @@ def register_handlers():
     @bot.callback_query_handler(func=lambda c: c.data == "cat_fable")
     def cb_cat_fable(c):
         bot.answer_callback_query(c.id)
-        set_state(c.from_user.id, "waiting_for_prompt", "claude-fable-5.2", 5)
+        set_state(c.from_user.id, "waiting_for_prompt", "claude-fable-5-2", 5)
         safe_edit(c.message.chat.id, c.message.message_id, "🔥 <b>Claude Fable 5.2 — новинка.</b>\n\nЭто самая умная модель. Стоимость 5₽ за запрос.\nНапиши вопрос:", reply_markup=cancel_kb(), parse_mode="HTML")
 
     @bot.callback_query_handler(func=lambda c: c.data == "buy_dark_sub")
@@ -1349,7 +1349,7 @@ def register_handlers():
     def _charge(uid, u, m_type) -> Tuple[Optional[str], Callable[[], None]]:
         noop = lambda: None
         if uid == ADMIN_ID: return "admin", noop
-        if m_type == "text" and u.get("temp_model_id") == "claude-fable-5.2":
+        if m_type == "text" and u.get("temp_model_id") == claude-fable-5-2":
             return "balance", noop
         if m_type == "dark_gpt":
             if sub_active(u) and u["sub_plan"] == "dark_gpt": return "sub", noop
@@ -1692,7 +1692,7 @@ def _gen_impl(uid: int, message, mid: str, m_type: str, price: int, is_admin: bo
     if file_bytes is None and message.content_type in ("photo","video","voice","audio","document"): file_bytes = download_tg_file(message)
     if m_type == "text" or m_type == "dark_gpt":
         status = safe_send(uid, "💬 Думаю...")
-        if mid == "claude-fable-5.2":
+        if mid == "claude-fable-5-2":
             pass
         if not status: Finance.refund(tx_id, "send_failed"); return
         history = get_chat_history(uid, MAX_HISTORY); history.append({"role": "user", "content": prompt})
