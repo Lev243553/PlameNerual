@@ -122,6 +122,12 @@ ADMIN_PAGE = 15
 DNS_CACHE_TTL = 60
 CLEANUP_BATCH = 500
 RATE_CLEANUP_BATCH = 500
+IMG_MAIN  = "https://i.postimg.cc/0QN2QW2X/IMG-20261110-204842-470.jpg"
+IMG_IMAGE = "https://i.postimg.cc/Bn1hW45b/IMG-20261110-205555-782.jpg"
+IMG_VIDEO = "https://i.postimg.cc/ZKn7crC0/IMG-20261110-205715-247.jpg"
+IMG_TEXT  = "https://i.postimg.cc/xjtpMsj5/IMG-20261110-205814-215.jpg"
+IMG_BAL   = "https://i.postimg.cc/BbYh3v7z/IMG-20261110-205911-386.jpg"
+IMG_SUB   = "https://i.postimg.cc/0QCWtnY8/IMG-20261110-210033-656.jpg"
 
 SUB_TARIFFS = {
     "start": {"title":"Старт", "price": 290, "limit": 30, "days":30},
@@ -898,6 +904,9 @@ def safe_send(uid: int, text: str, **kwargs):
             return None
         except Exception: return None
     return None
+def safe_send_photo(uid, photo, caption, **kw):
+    try: return bot.send_photo(uid, photo, caption=caption, **kw)
+    except Exception: return safe_send(uid, caption, **kw)
 def safe_send_media(uid: int, kind: str, file_obj, **kwargs):
     fn = getattr(bot, f"send_{kind}", None)
     if fn is None: return None
@@ -998,8 +1007,7 @@ def register_handlers():
             msg = bot.send_message(uid, "Очистка...", reply_markup=types.ReplyKeyboardRemove()); bot.delete_message(uid, msg.message_id)
         except Exception: pass
         bonus = "\n\n🎁 <b>Тебе подарок:</b> 1 бесплатная картинка!" if (is_new and FIRST_FREE_IMAGE) else ""
-        safe_send(uid, f"👋 Привет, @{uname}!\n\nЯ — <b>Нейро-Студия</b>.{bonus}\n\nВыбери, что хочешь сгенерировать:", reply_markup=main_menu(uid), parse_mode="HTML")
-
+        safe_send_photo(uid, IMG_MAIN, "❄️ <b>Нейро-Студия — Зимняя магия!</b> ❄️\n\n🎁 <b>Новогодние скидки:</b>\n• Скидка 10% на все подписки!\n• Картинки от 15₽!", reply_markup=main_menu(uid), parse_mode="HTML")
     @bot.message_handler(commands=["help"])
     def cmd_help(m): safe_send(m.chat.id, f"🤖 <b>Нейро-Студия</b>\n\n• /start — меню\n• /terms — условия\n• /privacy — политика\n• /refund — возврат\n• /delete_me — удалить данные\n\nПоддержка: {SUPPORT_URL}", parse_mode="HTML", disable_web_page_preview=True)
 
@@ -1364,15 +1372,15 @@ def register_handlers():
         if can_sub and consume_sub_slot(uid, SUB_TARIFFS[u["sub_plan"]]["limit"]): return "sub", lambda: incr_field(uid, "sub_used", -1)
         if m_type == "image" and take_free_image(uid): return "free", lambda: incr_field(uid, "free_image", 1)
         return "balance", noop
-
     @bot.callback_query_handler(func=lambda c: c.data == "menu_balance")
-    def cb_balance(c):
+    def cb_balance(c): 
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id); text_sub_info = ""
         if sub_active(u) and u["sub_plan"] in TEXT_SUB_TARIFFS:
             t = TEXT_SUB_TARIFFS[u["sub_plan"]]; used = u["sub_tokens_used"]; total = t["tokens"]; left = max(0, total - used); percent = int((used / total) * 100) if total > 0 else 0; bar = "🟩" * (percent // 10) + "⬜️" * (10 - (percent // 10)); text_sub_info = f"\n\n📝 <b>Текстовая подписка:</b> {t['title']}\n{bar} {percent}%\nОсталось: <b>{left:,} / {total:,}</b> токенов"
-        txt = (f"💰 <b>Твой баланс</b>\n\n🖼 Картинки: <b>{u['balance_img']}</b>\n🎵 Музыка: <b>{u['balance_aud']}</b>\n🎬 Видео: <b>{u['balance_vid']}</b>\n🗣 Озвучка: <b>{u['balance_tts']}</b>\n📝 Расшифровка: <b>{u['balance_stt']}</b>\n✏️ Редактор: <b>{u['balance_edit']}</b>\n🎞 Оживление: <b>{u['balance_anim']}</b>\n🔍 Апскейл: <b>{u['balance_up']}</b>\n\n🎁 Бесплатные картинки: <b>{u['free_image']}</b>\n💬 Бесплатные тексты: <b>{u['text_free_used']}/{FREE_TEXT_LIMIT}</b>{text_sub_info}")
-        safe_edit(c.message.chat.id, c.message.message_id, txt, reply_markup=back_menu(), parse_mode="HTML")
-
+        txt = (f"❄️ <b>Твой зимний баланс</b> ❄️\n\n🖼 Картинки: <b>{u['balance_img']}</b>\n...")
+        try: bot.delete_message(c.message.chat.id, c.message.message_id)
+        except: pass
+        safe_send_photo(c.from_user.id, IMG_BAL, txt, reply_markup=back_menu(), parse_mode="HTML")
     @bot.callback_query_handler(func=lambda c: c.data == "menu_works")
     def cb_works(c):
         bot.answer_callback_query(c.id)
@@ -1417,7 +1425,10 @@ def register_handlers():
         if setting("payments_on") != "1": return bot.answer_callback_query(c.id, "Оплата отключена.", show_alert=True)
         kb = types.InlineKeyboardMarkup(row_width=1)
         for code, t in SUB_TARIFFS.items(): kb.add(types.InlineKeyboardButton(f"{t['title']} — {t['limit']} ген. / {t['price']}₽", callback_data=f"sub_{code}"))
-        kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main")); safe_edit(c.message.chat.id, c.message.message_id, "🎫 <b>Подписки (Медиа)</b>", reply_markup=kb, parse_mode="HTML")
+        kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main")); 
+        try: bot.delete_message(c.message.chat.id, c.message.message_id)
+        except: pass
+        safe_send_photo(c.from_user.id, IMG_SUB, "🎫 <b>Подписки</b>\n\n❄️ <b>Зимняя акция -10%!</b>", reply_markup=kb, parse_mode="HTML")
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("pay_"))
     def cb_pay(c):
