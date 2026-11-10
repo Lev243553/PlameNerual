@@ -358,10 +358,10 @@ def is_safe_url(url: str) -> bool:
     except Exception: return False
     if p.scheme not in ("http", "https"): return False
     host = (p.hostname or "").lower()
-    if not host or not any(host == d or host.endswith("." + d) for d in ALLOWED_CDN): return False
+    if not host: return False
     _, ips = _resolve_ips_cached(host)
-    if not ips: return False
-    return not any(_ip_is_unsafe(ip) for ip in ips)
+    if ips and any(_ip_is_unsafe(ip) for ip in ips): return False
+    return True
 
 def _read_response(r, max_bytes: int, m_type: str) -> bytes:
     ct = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
