@@ -196,7 +196,8 @@ ALLOWED_CDN = {
     "cloudflarestorage.com",      # Cloudflare R2
     "amazonaws.com",              # AWS S3
     "fal.media",                  # Fal.ai
-    "pbxt.replicate.delivery"
+    "pbxt.replicate.delivery",
+    "leonardo.ai", "cdn.leonardo.ai"
 }
 
 _EXPECTED_CT = {
