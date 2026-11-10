@@ -190,7 +190,13 @@ ALLOWED_CDN = {
     "openrouter.ai", "api.ranvik.ru",
     "sprutdock.ru", "storage.sprutdock.ru", "cdn.sprutdock.ru",
     "clodex.xyz", "api.clodex.xyz", "cdn.clodex.xyz", "storage.clodex.xyz",
-    "grosh.me", "pay.grosh.me"
+    "grosh.me", "pay.grosh.me",
+    "blob.core.windows.net",      # Azure (OpenAI)
+    "replicate.delivery",         # Replicate
+    "cloudflarestorage.com",      # Cloudflare R2
+    "amazonaws.com",              # AWS S3
+    "fal.media",                  # Fal.ai
+    "pbxt.replicate.delivery"
 }
 
 _EXPECTED_CT = {
