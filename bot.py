@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Нейро-Студия v70 — Winter Edition ❄️ FINAL
-+ Рефералы + Задания + Ежедневки
-+ Агенты платные (10🖼), ADMIN_ID бесплатно
-+ Stars: rub / 1.3
-+ Platega v2: paymentDetails + RUB
+Нейро-Студия v70 — Winter Edition ❄️ Stars-first
+⭐ Stars — основной канал (1⭐ = 1.3₽, деление)
+💳 Platega v2 — вторичный (paymentDetails + RUB)
++ Рефералы + Задания + Ежедневки + Агенты (10🖼)
 """
 import os, time, uuid, sqlite3, logging, threading, signal, json, queue, http.server, io, hashlib
 from datetime import datetime
@@ -75,7 +74,6 @@ DB_POOL_SIZE = 16
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 API_RATE_PER_DAY = _env_int("API_RATE_PER_DAY", 200, 1)
 
-# Рефералы / Ежедневки / Задания
 REF_BONUS_REFERRER = 20
 REF_BONUS_REFERRED = 5
 DAILY_BONUS_IMG = 3
@@ -98,14 +96,13 @@ HTTP_TIMEOUT_LONG = (5, 90)
 AGENT_EXECUTOR = ThreadPoolExecutor(max_workers=8)
 
 def rub_to_stars(rub: int) -> int:
-    """Рубли → звёзды. 690₽ / 1.3 = 531 ⭐"""
+    """Рубли → звёзды. ДЕЛЕНИЕ: 690₽ / 1.3 = 531 ⭐"""
     return max(1, int(round(rub / STARS_RUB_PER_STAR)))
 
 def is_admin(uid):
     return uid == ADMIN_ID
 
 def charge(uid, field, amount=1):
-    """Списывает. Для ADMIN_ID — бесплатно."""
     if is_admin(uid): return True
     return sub_balance(uid, field, amount)
 
@@ -325,7 +322,7 @@ def get_history(uid, limit=MAX_HISTORY):
     return [{"role": r, "content": c} for r, c in reversed(rows)]
 
 # ==========================================================
-# РЕФЕРАЛЫ + ЕЖЕДНЕВКИ + ЗАДАНИЯ
+# РЕФЕРАЛЫ / ЕЖЕДНЕВКИ / ЗАДАНИЯ
 # ==========================================================
 def process_referral(new_uid):
     u = get_user(new_uid) or {}
@@ -558,7 +555,56 @@ def fulfill_by_payload(uid, payload, amount, provider="", charge_id="", stars=0)
     log_ev(uid, "paid", f"{payload} {amount} via {provider}")
 
 # ==========================================================
-# PLATEGA V2 (paymentDetails + RUB)
+# ⭐ STARS — ОСНОВНОЙ КАНАЛ
+# ==========================================================
+def send_stars_invoice(uid, title, description, payload, rub_price):
+    """Создаёт XTR-инвойс. rub_price → звёзды через ДЕЛЕНИЕ."""
+    stars = rub_to_stars(rub_price)
+    log.info(f"⭐ Stars invoice: uid={uid} payload={payload} rub={rub_price} stars={stars}")
+    try:
+        bot.send_invoice(
+            chat_id=uid,
+            title=title[:32],
+            description=description[:255],
+            invoice_payload=payload,
+            provider_token="",
+            currency="XTR",
+            prices=[types.LabeledPrice(label=title[:32], amount=stars)],
+        )
+    except Exception as e:
+        log.error(f"stars send_invoice: {e}")
+        safe_send(uid, "❌ Не удалось создать счёт Stars. Попробуйте /start")
+
+@bot.pre_checkout_query_handler(func=lambda q: True)
+def pre_checkout(q):
+    """Обязателен — Stars требует ответ в 10 сек."""
+    bot.answer_pre_checkout_query(q.id, ok=True)
+
+@bot.message_handler(content_types=["successful_payment"])
+def on_stars_paid(m):
+    p = m.successful_payment
+    uid = m.from_user.id
+    log.info(f"⭐ STARS PAID: uid={uid} payload={p.invoice_payload} stars={p.total_amount} charge={p.telegram_payment_charge_id}")
+    try:
+        fulfill_by_payload(uid, p.invoice_payload, p.total_amount,
+                           provider="stars", charge_id=p.telegram_payment_charge_id, stars=p.total_amount)
+    except Exception as e:
+        log.error(f"STARS FULFILL FAIL: {e}")
+        # Юзер заплатил — надо начислить хотя бы что-то
+        try:
+            # Если payload — пакет, начислим
+            if p.invoice_payload in BALANCE_PACKS:
+                bp = BALANCE_PACKS[p.invoice_payload]
+                add_balance(uid, bp["field"], bp["amount"])
+                safe_send(uid, f"✅ Оплачено {p.total_amount}⭐. {bp['title']} зачислено (fallback).")
+            else:
+                safe_send(uid, f"⚠️ Оплата {p.total_amount}⭐ получена. Начисление задержалось. Напишите в поддержку: {p.telegram_payment_charge_id}")
+        except Exception as e2:
+            log.error(f"STARS FALLBACK FAIL: {e2}")
+            safe_send(uid, f"⚠️ Оплата {p.total_amount}⭐ получена, но ошибка начисления. ID: {p.telegram_payment_charge_id}")
+
+# ==========================================================
+# PLATEGA V2 (вторичный канал)
 # ==========================================================
 def platega_create(uid, rub, desc, pkg, kind="balance"):
     if not PLATEGA_ID or not PLATEGA_SECRET: return None, None
@@ -622,7 +668,7 @@ def payment_poller():
         try:
             with DbConn() as c:
                 cur = c.cursor()
-                cur.execute("SELECT id FROM payments WHERE status='pending' AND ts > ? LIMIT 20", (time.time()-3600,))
+                cur.execute("SELECT id FROM payments WHERE status='pending' AND provider='platega' AND ts > ? LIMIT 20", (time.time()-3600,))
                 for (pid,) in cur.fetchall(): platega_check(pid)
         except Exception as e: log.warning(f"poller: {e}")
         time.sleep(15)
@@ -681,18 +727,20 @@ def show_main_menu(uid):
     kb.add(types.InlineKeyboardButton("🧠 Память", callback_data="menu_memory"),
            types.InlineKeyboardButton("📝 Подписки", callback_data="menu_subs"))
     kb.add(types.InlineKeyboardButton("💠 Баланс", callback_data="menu_balance"),
-           types.InlineKeyboardButton("💳 Пополнить", callback_data="menu_topup"))
-    kb.add(types.InlineKeyboardButton("🔑 API", callback_data="menu_api"),
-           types.InlineKeyboardButton("📜 История", callback_data="menu_history"))
-    kb.add(types.InlineKeyboardButton("🆘 Поддержка", url=SUPPORT_URL))
+           types.InlineKeyboardButton("⭐ Купить ⭐", callback_data="menu_stars_topup"))
+    kb.add(types.InlineKeyboardButton("💳 Карта", callback_data="menu_topup"),
+           types.InlineKeyboardButton("🔑 API", callback_data="menu_api"))
+    kb.add(types.InlineKeyboardButton("📜 История", callback_data="menu_history"),
+           types.InlineKeyboardButton("🆘 Поддержка", url=SUPPORT_URL))
     if TERMS_URL: kb.add(types.InlineKeyboardButton("📄 Соглашение", url=TERMS_URL))
     if PRIVACY_URL: kb.add(types.InlineKeyboardButton("🔒 Политика", url=PRIVACY_URL))
     if uid == ADMIN_ID: kb.add(types.InlineKeyboardButton("🛡 Админ", callback_data="admin_root"))
     safe_photo(uid, IMG_MAIN,
         "❄️ **Нейро-Студия v70** ❄️\n\n"
+        "⭐ **Звёзды** — работают всегда\n"
+        "💳 Карта — если работает Platega\n\n"
         "🔥 Fable 5.2 · 🖼 Картинки · 🎬 Видео\n"
-        "🎁 Ежедневки · 🏆 Задания · 👥 Рефералы\n\n"
-        "Выбери 👇",
+        "🎁 Ежедневки · 🏆 Задания · 👥 Рефералы",
         reply_markup=kb, parse_mode="Markdown")
 
 def show_consent(uid, ref_by=0):
@@ -774,7 +822,7 @@ def register_handlers():
         link = f"https://t.me/{bot_info}?start=ref_{c.from_user.id}"
         txt = (f"👥 **Рефералы**\n\n"
                f"🔗 Твоя ссылка:\n<code>{link}</code>\n\n"
-               f"💰 За друга: +{REF_BONUS_REFERRER} 🖼 тебе, +{REF_BONUS_REFERRED} 🖼 другу\n\n"
+               f"💰 +{REF_BONUS_REFERRER} 🖼 тебе, +{REF_BONUS_REFERRED} 🖼 другу\n\n"
                f"👥 Приглашено: {u.get('ref_count',0)}")
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("📤 Поделиться", url=f"https://t.me/share/url?url={link}&text=Попробуй!"))
@@ -839,32 +887,28 @@ def register_handlers():
         upd(c.from_user.id, state="stt_wait")
         safe_photo(c.from_user.id, IMG_TEXT, f"🎙 {u.get('balance_stt',0)}\n\n🎤 Голосовое:", parse_mode="Markdown")
 
-    # ===== ПОДПИСКИ =====
+    # ===== ПОДПИСКИ (⭐ Stars первой) =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_subs")
     def cb_subs(c):
-        bot.answer_callback_query(c.id); kb = types.InlineKeyboardMarkup(row_width=1)
+        bot.answer_callback_query(c.id)
+        kb = types.InlineKeyboardMarkup(row_width=1)
         for code, t in TEXT_SUB_TARIFFS.items():
             stars = rub_to_stars(t["price"])
-            kb.add(types.InlineKeyboardButton(f"{t['title']} — {t['price']}₽", callback_data=f"sub_{code}"))
             kb.add(types.InlineKeyboardButton(f"⭐ {t['title']} — {stars}⭐", callback_data=f"stars_sub_{code}"))
+            kb.add(types.InlineKeyboardButton(f"💳 {t['title']} — {t['price']}₽ (если работает)", callback_data=f"sub_{code}"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
-        safe_photo(c.from_user.id, IMG_SUB, "📝 Подписки:", reply_markup=kb, parse_mode="Markdown")
+        safe_photo(c.from_user.id, IMG_SUB,
+            "📝 **Подписки**\n\n"
+            "⭐ **Звёзды** — надёжно\n"
+            "💳 **Карта** — Platega (может не работать)",
+            reply_markup=kb, parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("stars_sub_"))
     def cb_stars_sub(c):
         code = c.data[10:]
         if code not in TEXT_SUB_TARIFFS: return
         t = TEXT_SUB_TARIFFS[code]; bot.answer_callback_query(c.id)
-        stars = rub_to_stars(t["price"])
-        try:
-            bot.send_invoice(
-                chat_id=c.from_user.id, title=t["title"][:32],
-                description=f"{t['tokens']:,} токенов на {t['days']} дней"[:255],
-                invoice_payload=f"sub_{code}", provider_token="", currency="XTR",
-                prices=[types.LabeledPrice(label=t["title"], amount=stars)],
-            )
-        except Exception as e:
-            log.error(f"stars invoice: {e}"); safe_send(c.from_user.id, "❌ Не удалось создать счёт.")
+        send_stars_invoice(c.from_user.id, t["title"], f"{t['tokens']:,} токенов на {t['days']} дней", f"sub_{code}", t["price"])
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("sub_"))
     def cb_sub(c):
@@ -872,7 +916,7 @@ def register_handlers():
         if code not in TEXT_SUB_TARIFFS: return
         t = TEXT_SUB_TARIFFS[code]; bot.answer_callback_query(c.id, "Создаю...")
         url, pid = platega_create(c.from_user.id, t["price"], t["title"], code, kind="sub")
-        if not url: return safe_send(c.from_user.id, "❌ Ошибка платежа.")
+        if not url: return safe_send(c.from_user.id, "❌ Platega не работает. Попробуй ⭐ звёзды!")
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("💳 Оплатить", url=url))
         kb.add(types.InlineKeyboardButton("🔄 Проверить", callback_data=f"checkpay_{pid}"))
@@ -890,17 +934,46 @@ def register_handlers():
                f"⬆️ {u.get('balance_up',0)} · ✏️ {u.get('balance_edit',0)} · 🎞 {u.get('balance_anim',0)}\n\n"
                f"📝 {sub}\n👥 Рефералов: {u.get('ref_count',0)}")
         kb = types.InlineKeyboardMarkup()
-        kb.add(types.InlineKeyboardButton("💳 Пополнить", callback_data="menu_topup"))
+        kb.add(types.InlineKeyboardButton("⭐ Купить ⭐", callback_data="menu_stars_topup"))
+        kb.add(types.InlineKeyboardButton("💳 Карта", callback_data="menu_topup"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
         safe_photo(c.from_user.id, IMG_BAL, txt, reply_markup=kb, parse_mode="Markdown")
 
+    # ===== ⭐ КУПИТЬ ЗА STARS (основной) =====
+    @bot.callback_query_handler(func=lambda c: c.data == "menu_stars_topup")
+    def cb_stars_topup(c):
+        bot.answer_callback_query(c.id)
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        for code, p in BALANCE_PACKS.items():
+            stars = rub_to_stars(p["price"])
+            kb.add(types.InlineKeyboardButton(f"⭐ {p['title']} — {stars}⭐", callback_data=f"stars_pack_{code}"))
+        kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_balance"))
+        safe_photo(c.from_user.id, IMG_BAL,
+            "⭐ **Пополнение звёздами**\n\n"
+            "1 звезда = 1.3₽\n"
+            "Оплата внутри Telegram — мгновенно",
+            reply_markup=kb, parse_mode="Markdown")
+
+    @bot.callback_query_handler(func=lambda c: c.data.startswith("stars_pack_"))
+    def cb_stars_pack(c):
+        code = c.data[11:]
+        if code not in BALANCE_PACKS: return
+        p = BALANCE_PACKS[code]; bot.answer_callback_query(c.id)
+        send_stars_invoice(c.from_user.id, p["title"], f"Пакет: {p['title']}", code, p["price"])
+
+    # ===== 💳 КАРТА (вторичный) =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_topup")
     def cb_top(c):
-        bot.answer_callback_query(c.id); kb = types.InlineKeyboardMarkup(row_width=2)
+        bot.answer_callback_query(c.id)
+        kb = types.InlineKeyboardMarkup(row_width=1)
         for code, p in BALANCE_PACKS.items():
-            kb.add(types.InlineKeyboardButton(f"{p['title']} — {p['price']}₽", callback_data=f"topup_{code}"))
+            kb.add(types.InlineKeyboardButton(f"💳 {p['title']} — {p['price']}₽", callback_data=f"topup_{code}"))
+        kb.add(types.InlineKeyboardButton("⭐ Лучше звёздами", callback_data="menu_stars_topup"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_balance"))
-        safe_photo(c.from_user.id, IMG_BAL, "💳 Пакеты:", reply_markup=kb, parse_mode="Markdown")
+        safe_photo(c.from_user.id, IMG_BAL,
+            "💳 **Пополнение картой**\n\n"
+            "⚠️ Если не работает — используй ⭐ звёзды",
+            reply_markup=kb, parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("topup_"))
     def cb_topbuy(c):
@@ -908,7 +981,8 @@ def register_handlers():
         if code not in BALANCE_PACKS: return
         p = BALANCE_PACKS[code]; bot.answer_callback_query(c.id, "Создаю...")
         url, pid = platega_create(c.from_user.id, p["price"], p["title"], code, kind="balance")
-        if not url: return safe_send(c.from_user.id, "❌ Ошибка.")
+        if not url:
+            return safe_send(c.from_user.id, "❌ Platega не работает. Используй ⭐ звёзды!\n\n/start → ⭐ Купить")
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("💳 Оплатить", url=url))
         kb.add(types.InlineKeyboardButton("🔄 Проверить", callback_data=f"checkpay_{pid}"))
@@ -919,18 +993,6 @@ def register_handlers():
         st = platega_check(int(c.data[9:]))
         msg = {"paid":"✅ Оплачено!","failed":"❌ Не прошёл","pending":"⏳ Не оплачено"}.get(st,"⏳")
         bot.answer_callback_query(c.id, msg, show_alert=True)
-
-    # ===== STARS PAYMENT =====
-    @bot.pre_checkout_query_handler(func=lambda q: True)
-    def pre_checkout(q): bot.answer_pre_checkout_query(q.id, ok=True)
-
-    @bot.message_handler(content_types=["successful_payment"])
-    def on_paid(m):
-        p = m.successful_payment; uid = m.from_user.id
-        # В БД пишем ЗВЁЗДЫ (p.total_amount), не рубли
-        fulfill_by_payload(uid, p.invoice_payload, p.total_amount,
-                           provider="stars", charge_id=p.telegram_payment_charge_id, stars=p.total_amount)
-        safe_send(uid, f"✅ Оплачено {p.total_amount} ⭐!")
 
     # ===== API =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_api")
@@ -951,8 +1013,8 @@ def register_handlers():
         kb = types.InlineKeyboardMarkup(row_width=1)
         for code, p in API_SUB_PLANS.items():
             stars = rub_to_stars(p["price"])
-            kb.add(types.InlineKeyboardButton(f"{p['title']} — {p['price']}₽", callback_data=f"apisub_{code}"))
             kb.add(types.InlineKeyboardButton(f"⭐ {p['title']} — {stars}⭐", callback_data=f"stars_api_{code}"))
+            kb.add(types.InlineKeyboardButton(f"💳 {p['title']} — {p['price']}₽", callback_data=f"apisub_{code}"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
         safe_photo(c.from_user.id, IMG_BAL, "🔑 API-доступ:", reply_markup=kb, parse_mode="Markdown")
 
@@ -961,10 +1023,7 @@ def register_handlers():
         code = c.data[10:]
         if code not in API_SUB_PLANS: return
         p = API_SUB_PLANS[code]; bot.answer_callback_query(c.id)
-        stars = rub_to_stars(p["price"])
-        bot.send_invoice(c.from_user.id, title=p["title"][:32], description=f"{p['days']} дней API"[:255],
-                         invoice_payload=code, provider_token="", currency="XTR",
-                         prices=[types.LabeledPrice(label=p["title"], amount=stars)])
+        send_stars_invoice(c.from_user.id, p["title"], f"{p['days']} дней API", code, p["price"])
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("apisub_"))
     def cb_api_buy(c):
@@ -972,7 +1031,7 @@ def register_handlers():
         if code not in API_SUB_PLANS: return
         p = API_SUB_PLANS[code]; bot.answer_callback_query(c.id, "Создаю...")
         url, pid = platega_create(c.from_user.id, p["price"], p["title"], code, kind="api_sub")
-        if not url: return safe_send(c.from_user.id, "❌ Ошибка.")
+        if not url: return safe_send(c.from_user.id, "❌ Platega не работает. Используй ⭐!")
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("💳 Оплатить", url=url))
         kb.add(types.InlineKeyboardButton("🔄 Проверить", callback_data=f"checkpay_{pid}"))
@@ -1038,7 +1097,7 @@ def register_handlers():
             db_c.cursor().execute("DELETE FROM chat_history WHERE user_id=?", (c.from_user.id,))
         bot.answer_callback_query(c.id, "🧹 Очищено!", show_alert=True)
 
-    # ===== МАРКЕТПЛЕЙС =====
+    # ===== МАРКЕТ =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_market")
     def cb_mkt(c):
         bot.answer_callback_query(c.id)
@@ -1106,13 +1165,13 @@ def register_handlers():
     def cb_ap(c):
         if c.from_user.id != ADMIN_ID: return
         with DbConn() as db_c:
-            cur = db_c.cursor(); cur.execute("SELECT user_id,package_id,amount,status,ts FROM payments ORDER BY id DESC LIMIT 20")
+            cur = db_c.cursor(); cur.execute("SELECT user_id,package_id,amount,status,provider,ts FROM payments ORDER BY id DESC LIMIT 20")
             rows = cur.fetchall()
         txt = "💳 Последние:\n\n"
-        for uid, pkg, amt, st, ts in rows:
+        for uid, pkg, amt, st, prov, ts in rows:
             t = datetime.fromtimestamp(ts).strftime("%d.%m %H:%M")
             em = "✅" if st == "paid" else ("⏳" if st == "pending" else "❌")
-            txt += f"{em} {t} · {uid} · {pkg} · {amt}₽\n"
+            txt += f"{em} {t} · {uid} · {pkg} · {amt} · {prov}\n"
         bot.answer_callback_query(c.id); safe_send(c.from_user.id, txt[:4000], parse_mode="HTML")
 
     @bot.callback_query_handler(func=lambda c: c.data == "admin_stats")
@@ -1120,10 +1179,10 @@ def register_handlers():
         if c.from_user.id != ADMIN_ID: return
         with DbConn() as db_c:
             cur = db_c.cursor()
-            cur.execute("SELECT COALESCE(SUM(amount),0) FROM payments WHERE status='paid' AND ts > ?", (time.time()-86400,)); today = cur.fetchone()[0]
+            cur.execute("SELECT COALESCE(SUM(amount),0) FROM payments WHERE status='paid' AND provider='platega' AND ts > ?", (time.time()-86400,)); p = cur.fetchone()[0]
+            cur.execute("SELECT COALESCE(SUM(stars_amount),0) FROM payments WHERE status='paid' AND provider='stars' AND ts > ?", (time.time()-86400,)); s = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM users WHERE created_at > ?", (time.time()-86400,)); new = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM users WHERE sub_until > ?", (time.time(),)); subs = cur.fetchone()[0]
-        bot.answer_callback_query(c.id); safe_send(c.from_user.id, f"📊 24ч:\n💰 {today}₽\n👥 +{new}\n📝 {subs} подписок")
+        bot.answer_callback_query(c.id); safe_send(c.from_user.id, f"📊 24ч:\n💳 Карта: {p}₽\n⭐ Stars: {s}⭐\n👥 +{new}")
 
     @bot.callback_query_handler(func=lambda c: c.data == "admin_give_menu")
     def cb_agm(c):
@@ -1176,7 +1235,7 @@ def register_handlers():
         if state == "agent_wait_prompt":
             upd(uid, state="")
             if not charge(uid, "balance_img", AGENT_PRICE_IMG):
-                return safe_send(uid, f"❌ Нужно {AGENT_PRICE_IMG} 🖼.\nПополни: 💳 Пополнить")
+                return safe_send(uid, f"❌ Нужно {AGENT_PRICE_IMG} 🖼.\nПополни: ⭐ или 💳")
             status = safe_send(uid, "🤖 Агенты совещаются... ❄️")
             f1 = AGENT_EXECUTOR.submit(gen_text, uid, "gpt-6-astra", text, False, False, 1024)
             f2 = AGENT_EXECUTOR.submit(gen_text, uid, "claude-fable-5.2", text, False, False, 1024)
@@ -1287,7 +1346,7 @@ def main():
     start_health(HEALTH_PORT)
     threading.Thread(target=payment_poller, daemon=True).start()
     threading.Thread(target=lambda: bot.infinity_polling(timeout=30, long_polling_timeout=25), daemon=True).start()
-    log.info("❄️ Neuro Studio v70 started ❄️")
+    log.info("❄️ Neuro Studio v70 Stars-first started ❄️")
     while not SHUTDOWN.is_set(): time.sleep(1)
 
 if __name__ == "__main__":
