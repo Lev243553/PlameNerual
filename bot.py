@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 Нейро-Студия v70 — Winter Edition ❄️
-Оплата: ⭐ Stars (основной) · 💳 Platega · 🟢 Grosh (по ключу bhp)
+Оплата: ⭐ Stars · 💳 Platega · 🟢 Grosh (авто-конвертация ₽ → $)
+Курс ЦБ РФ в реальном времени + fallback + кэш 30 мин.
 """
 import os, time, uuid, sqlite3, logging, threading, signal, json, queue, http.server, io, hashlib
 from datetime import datetime
@@ -54,7 +55,6 @@ PLATEGA_SECRET = os.getenv("PLATEGA_SECRET_KEY", "")
 PLATEGA_URL = os.getenv("PLATEGA_API_URL", "https://app.platega.io")
 RETURN_URL = os.getenv("RETURN_URL", "")
 
-# 🟢 Grosh — только ключ bhp, без ID и без AUTH_MODE
 GROSH_API_KEY = os.getenv("GROSH_API_KEY", "")
 GROSH_API_URL = os.getenv("GROSH_API_URL", "https://pay.grosh.me")
 
@@ -67,7 +67,8 @@ CLODEX_API_KEY = os.getenv("CLODEX_API_KEY", "")
 CLODEX_API_URL = os.getenv("CLODEX_API_URL", "https://api.clodex.xyz/v1")
 
 FX_API_URL = os.getenv("FX_API_URL", "https://www.cbr-xml-daily.ru/daily_json.js")
-FX_FALLBACK_RATE = _env_float("FX_FALLBACK_RATE", 92.0)
+FX_FALLBACK_RATE = _env_float("FX_FALLBACK_RATE", 82.54)
+FX_MARKUP_PCT = _env_float("FX_MARKUP_PCT", 3.0)
 
 FREE_TEXT_LIMIT = 2
 MAX_HISTORY = 10
@@ -110,15 +111,34 @@ def charge(uid, field, amount=1):
 def grosh_enabled():
     return bool(GROSH_API_KEY)
 
+# ==========================================================
+# FX — КУРС В РЕАЛЬНОМ ВРЕМЕНИ
+# ==========================================================
 class FxAnalyzer:
-    _rate = 0.0; _ts = 0.0
+    _rate = 0.0
+    _ts = 0.0
+    _lock = threading.Lock()
+    
     @classmethod
     def current(cls) -> float:
-        if cls._rate > 0 and (time.time() - cls._ts) < 1800: return cls._rate
-        try:
-            r = requests.get(FX_API_URL, timeout=5)
-            v = r.json()["Valute"]["USD"]["Value"]; cls._rate = v; cls._ts = time.time(); return v
-        except Exception: return FX_FALLBACK_RATE
+        with cls._lock:
+            if cls._rate > 0 and (time.time() - cls._ts) < 1800:
+                return cls._rate
+            try:
+                r = requests.get(FX_API_URL, timeout=5)
+                v = r.json()["Valute"]["USD"]["Value"]
+                cls._rate = v
+                cls._ts = time.time()
+                log.info(f"💱 Курс USD: {v}₽")
+                return v
+            except Exception as e:
+                log.warning(f"FX error: {e}")
+                return FX_FALLBACK_RATE
+    
+    @classmethod
+    def rub_to_usd(cls, rub: int) -> float:
+        rate = cls.current()
+        return round((float(rub) / rate) * (1 + FX_MARKUP_PCT / 100), 2)
 
 MODELS = {
     "openai/gpt-image-1.5": {"name":"GPT Image 1.5", "type":"image", "price":7, "provider":"polza"},
@@ -557,6 +577,9 @@ def fulfill_by_payload(uid, payload, amount, provider="", charge_id="", stars=0)
                         (uid, payload, base + p["days"]*86400))
         safe_photo(uid, IMG_BAL, f"✅ {p['title']} активен {p['days']} дн.")
     log_ev(uid, "paid", f"{payload} {amount} via {provider}")
+    # Уведомление админу
+    if ADMIN_ID:
+        safe_send(ADMIN_ID, f"💰 **Оплата**\n{payload} · {amount} · {provider}", parse_mode="Markdown")
 
 # ==========================================================
 # STARS
@@ -639,32 +662,28 @@ def _fulfill_platega(pid, uid, pkg, amt):
     fulfill_by_payload(uid, pkg, amt, "platega")
 
 # ==========================================================
-# 🟢 GROSH
+# 🟢 GROSH — АВТО-КОНВЕРТАЦИЯ ₽ → $
 # ==========================================================
 def grosh_create(uid, rub, desc, pkg, kind="balance"):
     if not GROSH_API_KEY: return None, None
     idem = f"grosh_{uid}_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+    usd = FxAnalyzer.rub_to_usd(rub)  # ⬅️ КОНВЕРТАЦИЯ
     body = {
-        "amount": float(rub),
+        "amount": usd,  # ⬅️ ДОЛЛАРЫ
         "label": desc[:100],
         "payload": idem,
         "webhook": f"{RETURN_URL or 'https://t.me'}/grosh_webhook",
         "success_url": RETURN_URL or "https://t.me",
     }
-    headers = {
-        "Authorization": f"Bearer {GROSH_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    headers = {"Authorization": f"Bearer {GROSH_API_KEY}", "Content-Type": "application/json"}
     try:
         r = requests.post(f"{GROSH_API_URL}/api/payments", headers=headers, json=body, timeout=HTTP_TIMEOUT_MED)
-        log.info(f"grosh create: {r.status_code} | {r.text[:300]}")
-        if r.status_code not in (200, 201):
-            return None, None
+        log.info(f"grosh create: {r.status_code} | {rub}₽ → {usd}$")
+        if r.status_code not in (200, 201): return None, None
         d = r.json()
         url = d.get("url") or d.get("payment_url") or d.get("redirect")
         pay_id = d.get("paymentId") or d.get("id")
-        if not url or not pay_id:
-            log.warning(f"grosh no url/id: {d}"); return None, None
+        if not url or not pay_id: return None, None
         with DbConn() as c:
             cur = c.cursor()
             cur.execute("INSERT INTO payments(user_id,package_id,amount,status,provider_id,ts,kind,provider) VALUES(?,?,?,?,?,?,?,?)",
@@ -756,7 +775,6 @@ def start_health(port):
 # МЕНЮ
 # ==========================================================
 def payment_choice_kb(payload, rub_price):
-    """Универсальная клавиатура выбора канала оплаты."""
     kb = types.InlineKeyboardMarkup(row_width=1)
     stars = rub_to_stars(rub_price)
     kb.add(types.InlineKeyboardButton(f"⭐ Оплатить {stars}⭐", callback_data=f"stars_{payload}"))
@@ -811,7 +829,6 @@ def show_consent(uid, ref_by=0):
 # ==========================================================
 def register_handlers():
 
-    # ===== STARS =====
     @bot.pre_checkout_query_handler(func=lambda q: True)
     def pre_checkout(q):
         bot.answer_pre_checkout_query(q.id, ok=True)
@@ -827,7 +844,6 @@ def register_handlers():
         except Exception as e:
             log.error(f"STARS FULFILL FAIL: {e}")
 
-    # ===== START =====
     @bot.message_handler(commands=["start"])
     def start(m):
         uid = m.from_user.id
@@ -841,6 +857,18 @@ def register_handlers():
         if not u.get("consent_at"): return show_consent(uid, ref_by)
         upd(uid, state="", last_seen=time.time())
         show_main_menu(uid)
+
+    @bot.message_handler(commands=["rate"])
+    def cmd_rate(m):
+        rate = FxAnalyzer.current()
+        usd_129 = FxAnalyzer.rub_to_usd(129)
+        safe_send(m.chat.id,
+            f"💱 **Курс USD**\n\n"
+            f"ЦБ РФ: {rate:.2f}₽\n"
+            f"С наценкой {FX_MARKUP_PCT}%: {rate * (1 + FX_MARKUP_PCT/100):.2f}₽\n\n"
+            f"129₽ = {usd_129}$\n"
+            f"1$ = {rate:.2f}₽",
+            parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("consent_yes"))
     def cb_consent(c):
@@ -857,14 +885,12 @@ def register_handlers():
     @bot.callback_query_handler(func=lambda c: c.data == "menu_main")
     def cb_main(c): bot.answer_callback_query(c.id); show_main_menu(c.from_user.id)
 
-    # ===== ЕЖЕДНЕВКА =====
     @bot.callback_query_handler(func=lambda c: c.data == "daily_bonus")
     def cb_daily(c):
         ok, msg = claim_daily(c.from_user.id)
         bot.answer_callback_query(c.id, "🎁" if ok else "⏳", show_alert=not ok)
         safe_send(c.from_user.id, msg)
 
-    # ===== ЗАДАНИЯ =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_tasks")
     def cb_tasks(c):
         bot.answer_callback_query(c.id)
@@ -882,7 +908,6 @@ def register_handlers():
             txt += f"{mark} {t['title']} → +{t['amount']}\n"
         safe_photo(c.from_user.id, IMG_TEXT, txt[:4000], parse_mode="Markdown")
 
-    # ===== РЕФЕРАЛЫ =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_refs")
     def cb_refs(c):
         bot.answer_callback_query(c.id)
@@ -898,7 +923,6 @@ def register_handlers():
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
         safe_photo(c.from_user.id, IMG_TEXT, txt, reply_markup=kb, parse_mode="HTML")
 
-    # ===== FABLE =====
     @bot.callback_query_handler(func=lambda c: c.data == "new_claude")
     def cb_fable(c):
         if not anti_flood(c.from_user.id): return bot.answer_callback_query(c.id, "⏳")
@@ -908,7 +932,6 @@ def register_handlers():
             f"🔥 **Fable 5.2**\n💰 5₽\n🧠 {u.get('text_free_used',0)}/{FREE_TEXT_LIMIT}\n\n✍️ Вопрос:",
             parse_mode="Markdown")
 
-    # ===== КАРТИНКИ =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_images")
     def cb_imgs(c):
         bot.answer_callback_query(c.id); kb = types.InlineKeyboardMarkup(row_width=1)
@@ -927,7 +950,6 @@ def register_handlers():
             f"🖼 {MODELS[mid]['name']}\n💰 {MODELS[mid]['price']}₽\n🎟 {u.get('balance_img',0)}\n\n✍️ Промпт:",
             parse_mode="Markdown")
 
-    # ===== ВИДЕО =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_video")
     def cb_vid(c):
         bot.answer_callback_query(c.id); kb = types.InlineKeyboardMarkup(row_width=1)
@@ -943,7 +965,6 @@ def register_handlers():
         bot.answer_callback_query(c.id); upd(c.from_user.id, state="vid_wait", temp_model_id=mid)
         safe_photo(c.from_user.id, IMG_VIDEO, f"🎬 {VIDEO_MODELS[mid]['name']}\n\n✍️ Опиши видео:", parse_mode="Markdown")
 
-    # ===== TTS/STT =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_tts")
     def cb_tts(c):
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
@@ -956,7 +977,6 @@ def register_handlers():
         upd(c.from_user.id, state="stt_wait")
         safe_photo(c.from_user.id, IMG_TEXT, f"🎙 {u.get('balance_stt',0)}\n\n🎤 Голосовое:", parse_mode="Markdown")
 
-    # ===== ПОДПИСКИ =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_subs")
     def cb_subs(c):
         bot.answer_callback_query(c.id)
@@ -976,7 +996,6 @@ def register_handlers():
             f"💳 **{t['title']}** — {t['price']}₽\n\nВыбери способ оплаты:",
             reply_markup=payment_choice_kb(f"sub_{code}", t["price"]), parse_mode="Markdown")
 
-    # ===== БАЛАНС =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_balance")
     def cb_bal(c):
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
@@ -1010,7 +1029,6 @@ def register_handlers():
             f"💳 **{p['title']}** — {p['price']}₽\n\nВыбери способ оплаты:",
             reply_markup=payment_choice_kb(code, p["price"]), parse_mode="Markdown")
 
-    # ===== ВЫБОР КАНАЛА: ⭐ / 💳 / 🟢 =====
     @bot.callback_query_handler(func=lambda c: c.data.startswith("stars_"))
     def cb_pay_stars(c):
         payload = c.data[6:]
@@ -1065,7 +1083,7 @@ def register_handlers():
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("🟢 Оплатить", url=url))
         kb.add(types.InlineKeyboardButton("🔄 Проверить", callback_data=f"checkpay_grosh_{pid}"))
-        safe_send(c.from_user.id, f"🟢 {desc}\n💰 {rub}₽", reply_markup=kb)
+        safe_send(c.from_user.id, f"🟢 {desc}\n💰 {rub}₽ (≈ {FxAnalyzer.rub_to_usd(rub)}$)", reply_markup=kb)
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("checkpay_"))
     def cb_check(c):
@@ -1078,7 +1096,6 @@ def register_handlers():
         msg = {"paid":"✅ Оплачено!","failed":"❌ Не прошёл","pending":"⏳ Не оплачено"}.get(st,"⏳")
         bot.answer_callback_query(c.id, msg, show_alert=True)
 
-    # ===== API =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_api")
     def cb_api(c):
         bot.answer_callback_query(c.id)
@@ -1112,7 +1129,6 @@ def register_handlers():
         raw = generate_api_key(m.from_user.id)
         safe_photo(m.chat.id, IMG_BAL, f"✅ <code>{raw}</code>\n\n⚠️ Сохрани, больше не покажем.", parse_mode="HTML")
 
-    # ===== ИСТОРИЯ =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_history")
     def cb_hist(c):
         bot.answer_callback_query(c.id)
@@ -1126,7 +1142,6 @@ def register_handlers():
             txt += f"• {datetime.fromtimestamp(ts).strftime('%d.%m %H:%M')} · {mt} · {mid} · {pr[:40]}\n"
         safe_send(c.from_user.id, txt[:4000], parse_mode="Markdown")
 
-    # ===== АГЕНТЫ =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_agents")
     def cb_ag(c):
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
@@ -1146,7 +1161,6 @@ def register_handlers():
         bot.answer_callback_query(c.id, "Напиши вопрос!", show_alert=True)
         upd(c.from_user.id, state="agent_wait_prompt")
 
-    # ===== ПАМЯТЬ =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_memory")
     def cb_mem(c):
         bot.answer_callback_query(c.id)
@@ -1166,7 +1180,6 @@ def register_handlers():
             db_c.cursor().execute("DELETE FROM chat_history WHERE user_id=?", (c.from_user.id,))
         bot.answer_callback_query(c.id, "🧹 Очищено!", show_alert=True)
 
-    # ===== МАРКЕТ =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_market")
     def cb_mkt(c):
         bot.answer_callback_query(c.id)
@@ -1194,13 +1207,11 @@ def register_handlers():
         if not r: return bot.answer_callback_query(c.id, "Нет", show_alert=True)
         bot.answer_callback_query(c.id); safe_send(c.from_user.id, f"📝 {r[0]}\n\n<code>{r[1]}</code>", parse_mode="HTML")
 
-    # ===== DARK =====
     @bot.callback_query_handler(func=lambda c: c.data == "cat_dark")
     def cb_dark(c):
         bot.answer_callback_query(c.id); upd(c.from_user.id, state="dark_wait")
         safe_photo(c.from_user.id, IMG_TEXT, "🩸 DarkGPT\n\n✍️ Вопрос:", parse_mode="Markdown")
 
-    # ===== АДМИН =====
     @bot.callback_query_handler(func=lambda c: c.data == "admin_root")
     def cb_admin(c):
         if c.from_user.id != ADMIN_ID: return bot.answer_callback_query(c.id, "⛔", show_alert=True)
@@ -1262,7 +1273,6 @@ def register_handlers():
         safe_send(c.from_user.id, "🎁 Формат: `ID поле количество`\nПоля: img/vid/tts/stt/edit/anim/up\nПример: `123456 img 50`", parse_mode="Markdown")
         upd(c.from_user.id, state="admin_give_wait")
 
-    # ===== ТЕКСТ =====
     @bot.message_handler(content_types=["text"])
     def handle_text(m):
         uid = m.from_user.id
@@ -1271,6 +1281,7 @@ def register_handlers():
         text = m.text.strip(); state = u.get("state", "")
 
         if text == "/start": return start(m)
+        if text == "/rate": return cmd_rate(m)
 
         if text.lower().startswith("запомни:"):
             fact = text[8:].strip()
@@ -1402,8 +1413,17 @@ def register_handlers():
             safe_send(uid, f"❌ {e}")
 
 # ==========================================================
-# MAIN
+# MAIN (с защитной обёрткой polling)
 # ==========================================================
+def safe_polling():
+    """Защита от падения polling: рестарт через 5 сек."""
+    while not SHUTDOWN.is_set():
+        try:
+            bot.infinity_polling(timeout=30, long_polling_timeout=25)
+        except Exception as e:
+            log.error(f"Polling crashed: {e}. Restart in 5s...")
+            time.sleep(5)
+
 def main():
     global bot
     if not TOKEN or not POLZA_KEY: raise SystemExit("BOT_TOKEN / POLZA_KEY не заданы")
@@ -1416,7 +1436,7 @@ def main():
     signal.signal(signal.SIGINT, lambda s,f: SHUTDOWN.set())
     start_health(HEALTH_PORT)
     threading.Thread(target=payment_poller, daemon=True).start()
-    threading.Thread(target=lambda: bot.infinity_polling(timeout=30, long_polling_timeout=25), daemon=True).start()
+    threading.Thread(target=safe_polling, daemon=True).start()
     log.info("❄️ Neuro Studio v70 started ❄️")
     while not SHUTDOWN.is_set(): time.sleep(1)
 
