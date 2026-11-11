@@ -11,6 +11,10 @@ import os, time, uuid, sqlite3, logging, threading, signal, json, queue, http.se
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
+import sys
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 import telebot
 from telebot import types
 import requests
@@ -525,7 +529,7 @@ def _stream(url, headers, body, attempts=3):
             if r.status_code in (429,502,503,504): last = r.status_code; time.sleep(2**i); continue
             if r.status_code != 200: return False, r.text[:300], r.status_code
             full = []
-            for raw in r.iter_lines(decode_unicode=True):
+            for raw in r.iter_lines(decode_unicode="utf-8"):
                 if not raw or not raw.startswith("data:"): continue
                 p = raw[5:].strip()
                 if p == "[DONE]": break
@@ -559,6 +563,11 @@ def gen_text(uid, mid, prompt, is_dark=False, use_history=True, max_tokens=2048)
     msgs = []
     if is_dark: msgs.append({"role": "system", "content": DARK_SYSTEM_PROMPT})
     if use_history and not is_dark: msgs.extend(get_history(uid))
+    try:
+        res = res.encode('latin-1').decode('utf-8')
+    except Exception:
+        pass
+    return res
     msgs.append({"role":"user","content":prompt})
     body = {"model": mid, "messages": msgs, "stream": True, "max_tokens": max_tokens}
     ok, res, code = _stream(url, headers, body)
