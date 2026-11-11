@@ -152,7 +152,7 @@ MODELS = {
     "claude-opus-5": {"name":"Claude Opus 5 (CX)", "type":"text", "price":3, "provider":"clodex"},
     "kimi-k3.1-pro": {"name":"Kimi K3.1 Pro (CX)", "type":"text", "price":3, "provider":"clodex"},
     "claude-fable-5.2": {"name":"Claude Fable 5.2 (CX) 🔥", "type":"text", "price":5, "provider":"clodex"},
-    "deepseek/deepseek-v4.1-flash": {"name":"DarkGPT (DeepSeek)", "type":"dark_gpt", "price":0, "provider":"ranvik"},
+    "deepseek-v4.1-flash": {"name":"DarkGPT (DeepSeek)", "type":"dark_gpt", "price":1, "provider":"clodex"},,
     "nvidia/nemotron-3-ultra-550b-a55b:free": {"name":"Nemotron 3 Ultra", "type":"text", "price":0, "provider":"openrouter"},
 }
 
