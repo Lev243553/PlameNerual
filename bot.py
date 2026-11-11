@@ -2,8 +2,9 @@
 """
 Нейро-Студия v70 — Winter Edition ❄️ FINAL
 + Рефералы + Задания + Ежедневки
-+ Агенты платные (AGENT_PRICE_IMG=10), кроме ADMIN_ID
-Платежи: Platega v2 + Telegram Stars (1⭐=1.3₽) + Grosh (опционально)
++ Агенты платные (10🖼), ADMIN_ID бесплатно
++ Stars: rub / 1.3
++ Platega v2: paymentDetails + RUB
 """
 import os, time, uuid, sqlite3, logging, threading, signal, json, queue, http.server, io, hashlib
 from datetime import datetime
@@ -50,19 +51,22 @@ PRIVACY_URL = os.getenv("PRIVACY_URL", "")
 TERMS_URL = os.getenv("TERMS_URL", "")
 CONSENT_VERSION = os.getenv("CONSENT_VERSION", "v1.0")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "")
+
 PLATEGA_ID = os.getenv("PLATEGA_MERCHANT_ID", "")
 PLATEGA_SECRET = os.getenv("PLATEGA_SECRET_KEY", "")
 PLATEGA_URL = os.getenv("PLATEGA_API_URL", "https://app.platega.io")
 RETURN_URL = os.getenv("RETURN_URL", "")
+
 STARS_RUB_PER_STAR = _env_float("STARS_RUB_PER_STAR", 1.3)
+
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
 RANVIK_API_KEY = os.getenv("RANVIK_API_KEY", "")
 RANVIK_API_URL = os.getenv("RANVIK_API_URL", "https://api.ranvik.ru/v1")
 CLODEX_API_KEY = os.getenv("CLODEX_API_KEY", "")
 CLODEX_API_URL = os.getenv("CLODEX_API_URL", "https://api.clodex.xyz/v1")
+
 FX_API_URL = os.getenv("FX_API_URL", "https://www.cbr-xml-daily.ru/daily_json.js")
 FX_FALLBACK_RATE = _env_float("FX_FALLBACK_RATE", 92.0)
-FX_MARKUP_PCT = _env_float("FX_MARKUP_PCT", 3.0)
 
 FREE_TEXT_LIMIT = 2
 MAX_HISTORY = 10
@@ -76,7 +80,7 @@ REF_BONUS_REFERRER = 20
 REF_BONUS_REFERRED = 5
 DAILY_BONUS_IMG = 3
 DAILY_BONUS_TTS = 1
-AGENT_PRICE_IMG = 10  # стоимость 1 запуска агентов (в картинках)
+AGENT_PRICE_IMG = 10
 
 TASKS = {
     "gen_first":  {"title":"🎨 Сгенери первую картинку", "field":"balance_img", "amount":2, "check":"works_img>=1"},
@@ -94,13 +98,14 @@ HTTP_TIMEOUT_LONG = (5, 90)
 AGENT_EXECUTOR = ThreadPoolExecutor(max_workers=8)
 
 def rub_to_stars(rub: int) -> int:
+    """Рубли → звёзды. 690₽ / 1.3 = 531 ⭐"""
     return max(1, int(round(rub / STARS_RUB_PER_STAR)))
 
 def is_admin(uid):
     return uid == ADMIN_ID
 
 def charge(uid, field, amount=1):
-    """Списывает с баланса. Для ADMIN_ID — бесплатно."""
+    """Списывает. Для ADMIN_ID — бесплатно."""
     if is_admin(uid): return True
     return sub_balance(uid, field, amount)
 
@@ -113,9 +118,6 @@ class FxAnalyzer:
             r = requests.get(FX_API_URL, timeout=5)
             v = r.json()["Valute"]["USD"]["Value"]; cls._rate = v; cls._ts = time.time(); return v
         except Exception: return FX_FALLBACK_RATE
-    @classmethod
-    def rub_to_usd(cls, rub: int) -> float:
-        return round((float(rub) / cls.current()) * (1 + FX_MARKUP_PCT / 100), 2)
 
 MODELS = {
     "openai/gpt-image-1.5": {"name":"GPT Image 1.5", "type":"image", "price":7, "provider":"polza"},
@@ -556,20 +558,29 @@ def fulfill_by_payload(uid, payload, amount, provider="", charge_id="", stars=0)
     log_ev(uid, "paid", f"{payload} {amount} via {provider}")
 
 # ==========================================================
-# PLATEGA V2
+# PLATEGA V2 (paymentDetails + RUB)
 # ==========================================================
 def platega_create(uid, rub, desc, pkg, kind="balance"):
     if not PLATEGA_ID or not PLATEGA_SECRET: return None, None
-    usd = FxAnalyzer.rub_to_usd(rub)
     idem = f"pay_{uid}_{int(time.time())}_{uuid.uuid4().hex[:6]}"
-    payload = {"merchantId": PLATEGA_ID, "amount": usd, "currency":"USD","description":desc,"orderId":idem,"returnUrl":RETURN_URL or "https://t.me"}
-    headers = {"X-MerchantId": PLATEGA_ID, "X-Secret": PLATEGA_SECRET, "Content-Type":"application/json"}
+    payload = {
+        "paymentDetails": {"amount": rub, "currency": "RUB"},
+        "description": desc,
+        "return": RETURN_URL or "https://t.me",
+        "failedUrl": RETURN_URL or "https://t.me",
+        "payload": idem,
+        "metadata": {"userId": str(uid)}
+    }
+    headers = {"X-MerchantId": PLATEGA_ID, "X-Secret": PLATEGA_SECRET, "Content-Type": "application/json"}
     try:
         r = requests.post(f"{PLATEGA_URL}/v2/transaction/process", headers=headers, json=payload, timeout=HTTP_TIMEOUT_MED)
-        if r.status_code not in (200,201):
-            log.warning(f"platega {r.status_code}: {r.text[:200]}"); return None, None
+        if r.status_code not in (200, 201):
+            log.warning(f"platega {r.status_code}: {r.text[:300]}")
+            return None, None
         d = r.json()
         url = d.get("url") or d.get("redirect")
+        if not url:
+            log.warning(f"platega no url: {d}"); return None, None
         with DbConn() as c:
             cur = c.cursor()
             cur.execute("INSERT INTO payments(user_id,package_id,amount,status,provider_id,ts,kind,provider) VALUES(?,?,?,?,?,?,?,?)",
@@ -590,10 +601,11 @@ def platega_check(pid):
     try:
         resp = requests.get(f"{PLATEGA_URL}/transaction/{prov}", headers=headers, timeout=HTTP_TIMEOUT_MED)
         if resp.status_code != 200: return "pending"
-        st = (resp.json().get("status") or "").lower()
-        if st in ("confirmed","success","paid"):
+        st = (resp.json().get("status") or "").upper()
+        if st in ("CONFIRMED","SUCCESS","PAID"):
             _fulfill_platega(pid, uid, pkg, amt); return "paid"
-        if st in ("canceled","failed","expired"): return "failed"
+        if st in ("CANCELED","FAILED","EXPIRED"):
+            return "failed"
     except Exception: pass
     return "pending"
 
@@ -741,16 +753,16 @@ def register_handlers():
         bot.answer_callback_query(c.id)
         new = check_tasks(c.from_user.id)
         if new:
-            txt = "🏆 **Новые задания выполнены!**\n\n"
+            txt = "🏆 **Новые задания!**\n\n"
             for tid in new:
-                t = TASKS[tid]; txt += f"• {t['title']} → +{t['amount']} {t['field'].replace('balance_','')}\n"
+                t = TASKS[tid]; txt += f"• {t['title']} → +{t['amount']}\n"
             safe_send(c.from_user.id, txt, parse_mode="Markdown")
         u = get_user(c.from_user.id) or {}
         done = set(filter(None, (u.get("tasks_done") or "").split(",")))
         txt = "🏆 **Задания:**\n\n"
         for tid, t in TASKS.items():
             mark = "✅" if tid in done else "⬜"
-            txt += f"{mark} {t['title']} → +{t['amount']} {t['field'].replace('balance_','')}\n"
+            txt += f"{mark} {t['title']} → +{t['amount']}\n"
         safe_photo(c.from_user.id, IMG_TEXT, txt[:4000], parse_mode="Markdown")
 
     # ===== РЕФЕРАЛЫ =====
@@ -765,7 +777,7 @@ def register_handlers():
                f"💰 За друга: +{REF_BONUS_REFERRER} 🖼 тебе, +{REF_BONUS_REFERRED} 🖼 другу\n\n"
                f"👥 Приглашено: {u.get('ref_count',0)}")
         kb = types.InlineKeyboardMarkup()
-        kb.add(types.InlineKeyboardButton("📤 Поделиться", url=f"https://t.me/share/url?url={link}&text=Попробуй этого бота!"))
+        kb.add(types.InlineKeyboardButton("📤 Поделиться", url=f"https://t.me/share/url?url={link}&text=Попробуй!"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
         safe_photo(c.from_user.id, IMG_TEXT, txt, reply_markup=kb, parse_mode="HTML")
 
@@ -776,7 +788,7 @@ def register_handlers():
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
         upd(c.from_user.id, state="fable_wait")
         safe_photo(c.from_user.id, IMG_TEXT,
-            f"🔥 **Fable 5.2**\n💰 5₽\n🧠 {u.get('text_free_used',0)}/{FREE_TEXT_LIMIT} бесплатных\n\n✍️ Вопрос:",
+            f"🔥 **Fable 5.2**\n💰 5₽\n🧠 {u.get('text_free_used',0)}/{FREE_TEXT_LIMIT}\n\n✍️ Вопрос:",
             parse_mode="Markdown")
 
     # ===== КАРТИНКИ =====
@@ -832,8 +844,9 @@ def register_handlers():
     def cb_subs(c):
         bot.answer_callback_query(c.id); kb = types.InlineKeyboardMarkup(row_width=1)
         for code, t in TEXT_SUB_TARIFFS.items():
+            stars = rub_to_stars(t["price"])
             kb.add(types.InlineKeyboardButton(f"{t['title']} — {t['price']}₽", callback_data=f"sub_{code}"))
-            kb.add(types.InlineKeyboardButton(f"⭐ {t['title']} — {rub_to_stars(t['price'])}⭐", callback_data=f"stars_sub_{code}"))
+            kb.add(types.InlineKeyboardButton(f"⭐ {t['title']} — {stars}⭐", callback_data=f"stars_sub_{code}"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
         safe_photo(c.from_user.id, IMG_SUB, "📝 Подписки:", reply_markup=kb, parse_mode="Markdown")
 
@@ -907,14 +920,15 @@ def register_handlers():
         msg = {"paid":"✅ Оплачено!","failed":"❌ Не прошёл","pending":"⏳ Не оплачено"}.get(st,"⏳")
         bot.answer_callback_query(c.id, msg, show_alert=True)
 
-    # ===== STARS payment handlers =====
+    # ===== STARS PAYMENT =====
     @bot.pre_checkout_query_handler(func=lambda q: True)
     def pre_checkout(q): bot.answer_pre_checkout_query(q.id, ok=True)
 
     @bot.message_handler(content_types=["successful_payment"])
     def on_paid(m):
         p = m.successful_payment; uid = m.from_user.id
-        fulfill_by_payload(uid, p.invoice_payload, int(p.total_amount * STARS_RUB_PER_STAR),
+        # В БД пишем ЗВЁЗДЫ (p.total_amount), не рубли
+        fulfill_by_payload(uid, p.invoice_payload, p.total_amount,
                            provider="stars", charge_id=p.telegram_payment_charge_id, stars=p.total_amount)
         safe_send(uid, f"✅ Оплачено {p.total_amount} ⭐!")
 
@@ -936,8 +950,9 @@ def register_handlers():
             return safe_photo(c.from_user.id, IMG_BAL, txt, reply_markup=kb, parse_mode="Markdown")
         kb = types.InlineKeyboardMarkup(row_width=1)
         for code, p in API_SUB_PLANS.items():
+            stars = rub_to_stars(p["price"])
             kb.add(types.InlineKeyboardButton(f"{p['title']} — {p['price']}₽", callback_data=f"apisub_{code}"))
-            kb.add(types.InlineKeyboardButton(f"⭐ {p['title']} — {rub_to_stars(p['price'])}⭐", callback_data=f"stars_api_{code}"))
+            kb.add(types.InlineKeyboardButton(f"⭐ {p['title']} — {stars}⭐", callback_data=f"stars_api_{code}"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
         safe_photo(c.from_user.id, IMG_BAL, "🔑 API-доступ:", reply_markup=kb, parse_mode="Markdown")
 
@@ -982,7 +997,7 @@ def register_handlers():
             txt += f"• {datetime.fromtimestamp(ts).strftime('%d.%m %H:%M')} · {mt} · {mid} · {pr[:40]}\n"
         safe_send(c.from_user.id, txt[:4000], parse_mode="Markdown")
 
-    # ===== АГЕНТЫ (платно) =====
+    # ===== АГЕНТЫ (10🖼) =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_agents")
     def cb_ag(c):
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
@@ -1158,11 +1173,10 @@ def register_handlers():
             except: pass
             return safe_send(uid, ans[:4000])
 
-        # ===== АГЕНТЫ (10🖼, кроме админа) =====
         if state == "agent_wait_prompt":
             upd(uid, state="")
             if not charge(uid, "balance_img", AGENT_PRICE_IMG):
-                return safe_send(uid, f"❌ Нужно {AGENT_PRICE_IMG} 🖼 для запуска агентов.\nПополни: 💳 Пополнить")
+                return safe_send(uid, f"❌ Нужно {AGENT_PRICE_IMG} 🖼.\nПополни: 💳 Пополнить")
             status = safe_send(uid, "🤖 Агенты совещаются... ❄️")
             f1 = AGENT_EXECUTOR.submit(gen_text, uid, "gpt-6-astra", text, False, False, 1024)
             f2 = AGENT_EXECUTOR.submit(gen_text, uid, "claude-fable-5.2", text, False, False, 1024)
