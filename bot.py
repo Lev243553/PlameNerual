@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Нейро-Студия v70 — Winter Edition ❄️ Stars-first
-⭐ Stars — основной канал (1⭐ = 1.3₽, деление)
-💳 Platega v2 — вторичный (paymentDetails + RUB)
-+ Рефералы + Задания + Ежедневки + Агенты (10🖼)
+Все @bot-декораторы ВНУТРИ register_handlers().
 """
 import os, time, uuid, sqlite3, logging, threading, signal, json, queue, http.server, io, hashlib
 from datetime import datetime
@@ -96,7 +94,6 @@ HTTP_TIMEOUT_LONG = (5, 90)
 AGENT_EXECUTOR = ThreadPoolExecutor(max_workers=8)
 
 def rub_to_stars(rub: int) -> int:
-    """Рубли → звёзды. ДЕЛЕНИЕ: 690₽ / 1.3 = 531 ⭐"""
     return max(1, int(round(rub / STARS_RUB_PER_STAR)))
 
 def is_admin(uid):
@@ -555,10 +552,9 @@ def fulfill_by_payload(uid, payload, amount, provider="", charge_id="", stars=0)
     log_ev(uid, "paid", f"{payload} {amount} via {provider}")
 
 # ==========================================================
-# ⭐ STARS — ОСНОВНОЙ КАНАЛ
+# STARS — общая функция (без декораторов)
 # ==========================================================
 def send_stars_invoice(uid, title, description, payload, rub_price):
-    """Создаёт XTR-инвойс. rub_price → звёзды через ДЕЛЕНИЕ."""
     stars = rub_to_stars(rub_price)
     log.info(f"⭐ Stars invoice: uid={uid} payload={payload} rub={rub_price} stars={stars}")
     try:
@@ -575,36 +571,8 @@ def send_stars_invoice(uid, title, description, payload, rub_price):
         log.error(f"stars send_invoice: {e}")
         safe_send(uid, "❌ Не удалось создать счёт Stars. Попробуйте /start")
 
-@bot.pre_checkout_query_handler(func=lambda q: True)
-def pre_checkout(q):
-    """Обязателен — Stars требует ответ в 10 сек."""
-    bot.answer_pre_checkout_query(q.id, ok=True)
-
-@bot.message_handler(content_types=["successful_payment"])
-def on_stars_paid(m):
-    p = m.successful_payment
-    uid = m.from_user.id
-    log.info(f"⭐ STARS PAID: uid={uid} payload={p.invoice_payload} stars={p.total_amount} charge={p.telegram_payment_charge_id}")
-    try:
-        fulfill_by_payload(uid, p.invoice_payload, p.total_amount,
-                           provider="stars", charge_id=p.telegram_payment_charge_id, stars=p.total_amount)
-    except Exception as e:
-        log.error(f"STARS FULFILL FAIL: {e}")
-        # Юзер заплатил — надо начислить хотя бы что-то
-        try:
-            # Если payload — пакет, начислим
-            if p.invoice_payload in BALANCE_PACKS:
-                bp = BALANCE_PACKS[p.invoice_payload]
-                add_balance(uid, bp["field"], bp["amount"])
-                safe_send(uid, f"✅ Оплачено {p.total_amount}⭐. {bp['title']} зачислено (fallback).")
-            else:
-                safe_send(uid, f"⚠️ Оплата {p.total_amount}⭐ получена. Начисление задержалось. Напишите в поддержку: {p.telegram_payment_charge_id}")
-        except Exception as e2:
-            log.error(f"STARS FALLBACK FAIL: {e2}")
-            safe_send(uid, f"⚠️ Оплата {p.total_amount}⭐ получена, но ошибка начисления. ID: {p.telegram_payment_charge_id}")
-
 # ==========================================================
-# PLATEGA V2 (вторичный канал)
+# PLATEGA V2
 # ==========================================================
 def platega_create(uid, rub, desc, pkg, kind="balance"):
     if not PLATEGA_ID or not PLATEGA_SECRET: return None, None
@@ -755,10 +723,37 @@ def show_consent(uid, ref_by=0):
         reply_markup=kb, parse_mode="Markdown")
 
 # ==========================================================
-# HANDLERS
+# HANDLERS — ВСЁ ВНУТРИ (bot уже создан)
 # ==========================================================
 def register_handlers():
 
+    # ===== ⭐ STARS — pre_checkout и successful_payment ВНУТРИ =====
+    @bot.pre_checkout_query_handler(func=lambda q: True)
+    def pre_checkout(q):
+        bot.answer_pre_checkout_query(q.id, ok=True)
+
+    @bot.message_handler(content_types=["successful_payment"])
+    def on_stars_paid(m):
+        p = m.successful_payment
+        uid = m.from_user.id
+        log.info(f"⭐ STARS PAID: uid={uid} payload={p.invoice_payload} stars={p.total_amount} charge={p.telegram_payment_charge_id}")
+        try:
+            fulfill_by_payload(uid, p.invoice_payload, p.total_amount,
+                               provider="stars", charge_id=p.telegram_payment_charge_id, stars=p.total_amount)
+        except Exception as e:
+            log.error(f"STARS FULFILL FAIL: {e}")
+            try:
+                if p.invoice_payload in BALANCE_PACKS:
+                    bp = BALANCE_PACKS[p.invoice_payload]
+                    add_balance(uid, bp["field"], bp["amount"])
+                    safe_send(uid, f"✅ Оплачено {p.total_amount}⭐. {bp['title']} зачислено (fallback).")
+                else:
+                    safe_send(uid, f"⚠️ Оплата {p.total_amount}⭐. Ошибка начисления. ID: {p.telegram_payment_charge_id}")
+            except Exception as e2:
+                log.error(f"STARS FALLBACK FAIL: {e2}")
+                safe_send(uid, f"⚠️ Оплата {p.total_amount}⭐. ID: {p.telegram_payment_charge_id}")
+
+    # ===== START =====
     @bot.message_handler(commands=["start"])
     def start(m):
         uid = m.from_user.id
@@ -887,7 +882,7 @@ def register_handlers():
         upd(c.from_user.id, state="stt_wait")
         safe_photo(c.from_user.id, IMG_TEXT, f"🎙 {u.get('balance_stt',0)}\n\n🎤 Голосовое:", parse_mode="Markdown")
 
-    # ===== ПОДПИСКИ (⭐ Stars первой) =====
+    # ===== ПОДПИСКИ =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_subs")
     def cb_subs(c):
         bot.answer_callback_query(c.id)
@@ -898,9 +893,7 @@ def register_handlers():
             kb.add(types.InlineKeyboardButton(f"💳 {t['title']} — {t['price']}₽ (если работает)", callback_data=f"sub_{code}"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
         safe_photo(c.from_user.id, IMG_SUB,
-            "📝 **Подписки**\n\n"
-            "⭐ **Звёзды** — надёжно\n"
-            "💳 **Карта** — Platega (может не работать)",
+            "📝 **Подписки**\n\n⭐ **Звёзды** — надёжно\n💳 **Карта** — Platega",
             reply_markup=kb, parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("stars_sub_"))
@@ -939,7 +932,7 @@ def register_handlers():
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
         safe_photo(c.from_user.id, IMG_BAL, txt, reply_markup=kb, parse_mode="Markdown")
 
-    # ===== ⭐ КУПИТЬ ЗА STARS (основной) =====
+    # ===== ⭐ КУПИТЬ ЗА STARS =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_stars_topup")
     def cb_stars_topup(c):
         bot.answer_callback_query(c.id)
@@ -949,9 +942,7 @@ def register_handlers():
             kb.add(types.InlineKeyboardButton(f"⭐ {p['title']} — {stars}⭐", callback_data=f"stars_pack_{code}"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_balance"))
         safe_photo(c.from_user.id, IMG_BAL,
-            "⭐ **Пополнение звёздами**\n\n"
-            "1 звезда = 1.3₽\n"
-            "Оплата внутри Telegram — мгновенно",
+            "⭐ **Пополнение звёздами**\n\n1 звезда = 1.3₽\nОплата в Telegram — мгновенно",
             reply_markup=kb, parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("stars_pack_"))
@@ -961,7 +952,7 @@ def register_handlers():
         p = BALANCE_PACKS[code]; bot.answer_callback_query(c.id)
         send_stars_invoice(c.from_user.id, p["title"], f"Пакет: {p['title']}", code, p["price"])
 
-    # ===== 💳 КАРТА (вторичный) =====
+    # ===== 💳 КАРТА =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_topup")
     def cb_top(c):
         bot.answer_callback_query(c.id)
@@ -970,9 +961,7 @@ def register_handlers():
             kb.add(types.InlineKeyboardButton(f"💳 {p['title']} — {p['price']}₽", callback_data=f"topup_{code}"))
         kb.add(types.InlineKeyboardButton("⭐ Лучше звёздами", callback_data="menu_stars_topup"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_balance"))
-        safe_photo(c.from_user.id, IMG_BAL,
-            "💳 **Пополнение картой**\n\n"
-            "⚠️ Если не работает — используй ⭐ звёзды",
+        safe_photo(c.from_user.id, IMG_BAL, "💳 **Пополнение картой**\n\n⚠️ Если не работает — ⭐ звёзды",
             reply_markup=kb, parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("topup_"))
@@ -1006,8 +995,7 @@ def register_handlers():
             plan, exp, req, tok = sub; p = API_SUB_PLANS.get(plan, {})
             txt = (f"🔑 **API активен**\n{p.get('title','')}\n"
                    f"⏳ {(exp-time.time())//86400:.0f} дн.\n"
-                   f"📊 {req}/{p.get('requests','?')}\n🔤 {tok:,}/{p.get('tokens',0):,}\n\n"
-                   f"Ключ: /gen_api")
+                   f"📊 {req}/{p.get('requests','?')}\n🔤 {tok:,}/{p.get('tokens',0):,}\n\nКлюч: /gen_api")
             kb = types.InlineKeyboardMarkup(); kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
             return safe_photo(c.from_user.id, IMG_BAL, txt, reply_markup=kb, parse_mode="Markdown")
         kb = types.InlineKeyboardMarkup(row_width=1)
@@ -1056,7 +1044,7 @@ def register_handlers():
             txt += f"• {datetime.fromtimestamp(ts).strftime('%d.%m %H:%M')} · {mt} · {mid} · {pr[:40]}\n"
         safe_send(c.from_user.id, txt[:4000], parse_mode="Markdown")
 
-    # ===== АГЕНТЫ (10🖼) =====
+    # ===== АГЕНТЫ =====
     @bot.callback_query_handler(func=lambda c: c.data == "menu_agents")
     def cb_ag(c):
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
@@ -1065,8 +1053,7 @@ def register_handlers():
         kb.add(types.InlineKeyboardButton("➕ Создать агента", callback_data="create_agent"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
         safe_photo(c.from_user.id, IMG_TEXT,
-            f"🤖 **Агенты** (GPT + Fable + Dark)\n\n"
-            f"{price_line}\n🎟 Баланс: {u.get('balance_img',0)} 🖼",
+            f"🤖 **Агенты** (GPT + Fable + Dark)\n\n{price_line}\n🎟 Баланс: {u.get('balance_img',0)} 🖼",
             reply_markup=kb, parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data == "create_agent")
@@ -1340,7 +1327,7 @@ def main():
     Db.init(os.path.join(DATA_DIR, "media_bot.db"), DB_POOL_SIZE)
     init_db()
     bot = telebot.TeleBot(TOKEN, threaded=True)
-    register_handlers()
+    register_handlers()  # bot УЖЕ создан — декораторы работают
     signal.signal(signal.SIGTERM, lambda s,f: SHUTDOWN.set())
     signal.signal(signal.SIGINT, lambda s,f: SHUTDOWN.set())
     start_health(HEALTH_PORT)
