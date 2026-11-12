@@ -1669,3 +1669,36 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# 🆕 AI Fix (2026-11-12T08:47:34.789689):
+# ## Что показывает лог
+
+Две разные ошибки, и вторая — не следствие первой:
+
+1. **`ReadTimeout (read timeout=30)`** — клиент (`requests`) оборвал long-poll раньше, чем Telegram успел отдать апдейты. Причина — клиентский `READ_TIMEOUT` (по умолчанию 30 с у pyTelegramBotAPI) **меньше или равен** серверному `long_polling_timeout`. Судя по логу, вы передаёте `long_polling_timeout=30` → таймауты совпадают, и ReadTimeout гарантированно «выигрывает гонку».
+2. **`409 Conflict: terminated by other getUpdates request`** каждые ~4 секунды — это **два параллельных `getUpdates` на один токен**. Telegram такое сообщение отдаёт только в одном случае: pending-запрос уже висит. Это не сетевой сбой и не проблема библиотеки.
+
+## Корневая причина бага
+
+Поллер запускается в одном процессе **более одного раза** (или в нескольких). Первый `ReadTimeout` роняет поток, `__threaded_polling` поднимает новый, а сама библиотека не гарантирует, что на стороне Telegram предыдущий long-poll уже снят — получаем первый 409. Дальше он самоподдерживается, потому что рядом живёт второй источник апдейтов. Типичные источники:
+
+- `Flask(debug=True)` / `django runserver` с автоперезагрузкой → **два процесса**;
+- gunicorn/uwsgi с `workers > 1`;
+- systemd-юнит + ручной запуск (или два контейнера);
+- `bot.polling()` на уровне модуля, который импортируется дважды;
+- перезапуск поллинга из обработчика исключения без `stop_polling()`;
+- остался установленный webhook (тогда 409 будет с текстом `can't use getUpdates while webhook is active`).
+
+Быстрая проверка:
+
+```bash
+ps -eo pid,ppid,cmd | grep "[b]ot.py"        # должно быть РОВНО один процесс
+docker ps --format '{{.Names}} {{.Command}}' # нет ли второго контейнера
+python -c "import telebot,os;print(telebot.TeleBot(os.environ['BOT_TOKEN']).get_webhook_info())"
+# url должен быть '', pending_update_count не должен расти
+```
+
+## Патч
+
+Реального файла вы не прислали, поэтому diff — для типового `bot.py`. Смысл: один процесс (lock), `READ_TIMEOUT > long_polling_timeout
