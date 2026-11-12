@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-❄️ Нейро-Студия v84 — Winter Edition ❄️
-🌟 ИИ-Инженер теперь читает код и применяет патчи автоматически.
+❄️ Нейро-Студия v85 — Winter Edition ❄️
+🌟 ИИ-Инженер видит код и выдает готовые функции. Команда /update_code.
 """
 import os, sys, io, time, uuid, sqlite3, logging, threading, signal, json, queue, http.server, hashlib, re
 from datetime import datetime
@@ -306,11 +306,8 @@ def init_db():
             daily_last TEXT DEFAULT '', daily_streak INTEGER DEFAULT 0,
             tasks_done TEXT DEFAULT '')''')
         
-        # 🆕 Безопасная миграция api_keys
-        try:
-            cur.execute("ALTER TABLE api_keys ADD COLUMN key_hash TEXT PRIMARY KEY")
-        except sqlite3.OperationalError:
-            pass
+        # 🆕 ЖЕСТКИЙ ФИКС: удаляем старую таблицу api_keys
+        cur.execute("DROP TABLE IF EXISTS api_keys")
         cur.execute('''CREATE TABLE IF NOT EXISTS api_keys(key_hash TEXT PRIMARY KEY, user_id INTEGER, created_at REAL, expires_at REAL)''')
         
         cur.execute('''CREATE TABLE IF NOT EXISTS api_subs(user_id INTEGER PRIMARY KEY, plan TEXT DEFAULT '', expires_at REAL DEFAULT 0, requests_used INTEGER DEFAULT 0, tokens_used INTEGER DEFAULT 0)''')
@@ -415,6 +412,18 @@ def get_history(uid, limit=MAX_HISTORY):
         cur = c.cursor(); cur.execute("SELECT role,content FROM chat_history WHERE user_id=? ORDER BY id DESC LIMIT ?", (uid, limit))
         rows = cur.fetchall()
     return [{"role": r, "content": c} for r, c in reversed(rows)]
+
+# 🆕 ФУНКЦИЯ ОБНОВЛЕНИЯ ФАЙЛА
+def update_bot_file(new_content: str) -> str:
+    try:
+        compile(new_content, "bot.py", "exec")
+    except SyntaxError as e:
+        return f"❌ Ошибка синтаксиса: {e}"
+    try: os.rename("bot.py", "bot.py.bak")
+    except: pass
+    with open("bot.py", "w", encoding="utf-8") as f:
+        f.write(new_content)
+    return "✅ Файл bot.py обновлен! Перезапусти бота."
 
 # ==========================================================
 # 👥 РЕФЕРАЛЫ / 🎁 ЕЖЕДНЕВКИ / 🏆 ЗАДАНИЯ
@@ -862,9 +871,8 @@ def _call_clodex_fixer(user_prompt: str) -> str:
 
     prompt = (
         f"Ты senior Python-разработчик. Ниже полный код моего бота (bot.py) и моя задача/ошибка.\n\n"
-        f"Твоя задача: выдать ТОЛЬКО unified diff (патч), который нужно применить к этому файлу, чтобы исправить проблему.\n"
-        f"Пиши только код в формате:\n```diff\n--- a/bot.py\n+++ b/bot.py\n@@ ... @@\n- старая строка\n+ новая строка\n```\n"
-        f"Не пиши 'здесь нужно вставить', не пиши вступления. Только готовый патч.\n\n"
+        f"Твоя задача: выдать ГОТОВЫЙ код функции, которую я заменю целиком, чтобы исправить проблему.\n"
+        f"Пиши только код, без вступлений и объяснений. Только функцию.\n\n"
         f"Моя задача:\n{user_prompt}\n\n"
         f"Вот полный код файла:\n```python\n{bot_code[:25000]}\n```"
     )
@@ -899,10 +907,8 @@ def create_github_pr(fix_text: str) -> str:
     content = base64.b64decode(r.json()["content"]).decode("utf-8")
     file_sha = r.json()["sha"]
     
-    # Пытаемся применить патч
     new_content = content
     diff_blocks = re.findall(r'```diff\n(.*?)\n```', fix_text, re.DOTALL)
-    
     if diff_blocks:
         for block in diff_blocks:
             lines = block.splitlines()
@@ -913,7 +919,6 @@ def create_github_pr(fix_text: str) -> str:
                     minus_lines.append(line[1:])
                 elif line.startswith('+') and not line.startswith('+++'):
                     plus_lines.append(line[1:])
-            
             if minus_lines and plus_lines:
                 old_str = "\n".join(minus_lines)
                 new_str = "\n".join(plus_lines)
@@ -1370,7 +1375,6 @@ def register_handlers():
     @bot.message_handler(commands=["gen_api"])
     def gen_api(m):
         uid = m.from_user.id
-        # Админу - бесплатно
         if uid == ADMIN_ID:
             with DbConn() as c:
                 c.cursor().execute("INSERT OR REPLACE INTO api_subs(user_id, plan, expires_at, requests_used, tokens_used) VALUES(?,?,?,0,0)",
@@ -1506,7 +1510,7 @@ def register_handlers():
         if c.from_user.id != ADMIN_ID: return
         bot.answer_callback_query(c.id)
         upd(c.from_user.id, state="admin_ai_chat_wait")
-        safe_send(c.from_user.id, "🤖 **ИИ-Инженер (Terra 6.1)** ❄️\n\nОтправь текст ошибки. Я передам его ИИ, и он предложит фикс.\n\n(Чтобы выйти, напиши /start)", parse_mode="Markdown")
+        safe_send(c.from_user.id, "🤖 **ИИ-Инженер (Terra 6.1)** ❄️\n\nОтправь задачу. ИИ увидит код и предложит готовую функцию.\n\n(Чтобы выйти, напиши /start)", parse_mode="Markdown")
 
     # 🆕 ВЫДАЧА API
     @bot.callback_query_handler(func=lambda c: c.data == "admin_give_api")
@@ -1560,6 +1564,16 @@ def register_handlers():
         safe_send(c.from_user.id, "🎁 **Выдача баланса** ❄️\n\nФормат: `ID поле количество`\nПоля: `img/vid/tts/stt/edit/anim/up`\n\nПример: `123456 img 50`", parse_mode="Markdown")
         upd(c.from_user.id, state="admin_give_wait")
 
+    # 🆕 ОБНОВЛЕНИЕ КОДА
+    @bot.message_handler(commands=["update_code"])
+    def cmd_update_code(m):
+        if m.from_user.id != ADMIN_ID: return
+        if not m.reply_to_message or not m.reply_to_message.text:
+            return safe_send(m.chat.id, "❌ Ответь на сообщение с кодом командой /update_code")
+        new_code = m.reply_to_message.text
+        res = update_bot_file(new_code)
+        safe_send(m.chat.id, res)
+
     @bot.message_handler(content_types=["text"])
     def handle_text(m):
         uid = m.from_user.id
@@ -1594,12 +1608,18 @@ def register_handlers():
             except: return safe_send(uid, "❌ Формат: Продать: Название | Промпт | 100")
 
         if state == "admin_ai_chat_wait" and uid == ADMIN_ID:
-            status_msg = safe_send(uid, "🤖 **Terra 6.1** анализирует код... (пара секунд)")
+            status_msg = safe_send(uid, "🤖 **Terra 6.1** анализирует код...")
             proposal = _call_clodex_fixer(text)
             try: bot.delete_message(uid, status_msg.message_id)
             except: pass
+            
+            # Сохраняем ответ в файл, чтобы можно было применить
+            with open("ai_response.txt", "w", encoding="utf-8") as f:
+                f.write(proposal)
+                
             kb = types.InlineKeyboardMarkup()
             kb.add(types.InlineKeyboardButton("🐙 Создать PR", callback_data="gh_pr_fix"))
+            kb.add(types.InlineKeyboardButton("📝 Применить (ответь на сообщение)", callback_data="help_apply"))
             return safe_send(uid, f"🤖 **Ответ ИИ:**\n\n{proposal[:3500]}", reply_markup=kb, parse_mode="Markdown")
 
         # 🆕 ВЫДАЧА API
@@ -1797,7 +1817,7 @@ def main():
     threading.Thread(target=payment_poller, daemon=True).start()
     threading.Thread(target=ai_fixer_worker, daemon=True).start()
     threading.Thread(target=safe_polling, daemon=True).start()
-    log.info("❄️ Neuro Studio v84 started ❄️")
+    log.info("❄️ Neuro Studio v85 started ❄️")
     while not SHUTDOWN.is_set(): time.sleep(1)
 
 if __name__ == "__main__":
