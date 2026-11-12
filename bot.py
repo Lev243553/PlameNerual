@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-❄️ Нейро-Студия v83 — Winter Edition ❄️
-🌟 Terra 6.1 для инженера, жесткая отмена, чистый код.
+❄️ Нейро-Студия v84 — Winter Edition ❄️
+🌟 ИИ-Инженер теперь читает код и применяет патчи автоматически.
 """
-import os, sys, io, time, uuid, sqlite3, logging, threading, signal, json, queue, http.server, hashlib
+import os, sys, io, time, uuid, sqlite3, logging, threading, signal, json, queue, http.server, hashlib, re
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
@@ -305,7 +305,14 @@ def init_db():
             referred_by INTEGER DEFAULT 0, ref_count INTEGER DEFAULT 0,
             daily_last TEXT DEFAULT '', daily_streak INTEGER DEFAULT 0,
             tasks_done TEXT DEFAULT '')''')
+        
+        # 🆕 Безопасная миграция api_keys
+        try:
+            cur.execute("ALTER TABLE api_keys ADD COLUMN key_hash TEXT PRIMARY KEY")
+        except sqlite3.OperationalError:
+            pass
         cur.execute('''CREATE TABLE IF NOT EXISTS api_keys(key_hash TEXT PRIMARY KEY, user_id INTEGER, created_at REAL, expires_at REAL)''')
+        
         cur.execute('''CREATE TABLE IF NOT EXISTS api_subs(user_id INTEGER PRIMARY KEY, plan TEXT DEFAULT '', expires_at REAL DEFAULT 0, requests_used INTEGER DEFAULT 0, tokens_used INTEGER DEFAULT 0)''')
         cur.execute('''CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, package_id TEXT, amount INTEGER, status TEXT, provider_id TEXT, ts REAL, kind TEXT, provider TEXT, stars_amount INTEGER DEFAULT 0)''')
         cur.execute('''CREATE TABLE IF NOT EXISTS chat_history(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, role TEXT, content TEXT, ts REAL)''')
@@ -845,8 +852,23 @@ def _read_recent_errors(max_bytes=8000):
             f.seek(max(0, size - max_bytes)); return f.read()
     except Exception: return ""
 
-def _call_clodex_fixer(log_text: str) -> str:
-    prompt = f"Ты senior Python. Найди баг и предложи патч (unified diff).\n\nЛог:\n{log_text[-6000:]}"
+def _call_clodex_fixer(user_prompt: str) -> str:
+    # Читаем код бота из файла
+    try:
+        with open("bot.py", "r", encoding="utf-8") as f:
+            bot_code = f.read()
+    except Exception as e:
+        return f"❌ Не могу прочитать bot.py: {e}"
+
+    prompt = (
+        f"Ты senior Python-разработчик. Ниже полный код моего бота (bot.py) и моя задача/ошибка.\n\n"
+        f"Твоя задача: выдать ТОЛЬКО unified diff (патч), который нужно применить к этому файлу, чтобы исправить проблему.\n"
+        f"Пиши только код в формате:\n```diff\n--- a/bot.py\n+++ b/bot.py\n@@ ... @@\n- старая строка\n+ новая строка\n```\n"
+        f"Не пиши 'здесь нужно вставить', не пиши вступления. Только готовый патч.\n\n"
+        f"Моя задача:\n{user_prompt}\n\n"
+        f"Вот полный код файла:\n```python\n{bot_code[:25000]}\n```"
+    )
+    
     try:
         url, headers = _prov("clodex")
         body = {"model": "gpt-6.1-terra", "messages": [{"role": "user", "content": prompt}], "stream": False}
@@ -877,7 +899,30 @@ def create_github_pr(fix_text: str) -> str:
     content = base64.b64decode(r.json()["content"]).decode("utf-8")
     file_sha = r.json()["sha"]
     
-    new_content = content + f"\n\n# 🆕 AI Fix ({datetime.now().isoformat()}):\n# {fix_text[:2000]}\n"
+    # Пытаемся применить патч
+    new_content = content
+    diff_blocks = re.findall(r'```diff\n(.*?)\n```', fix_text, re.DOTALL)
+    
+    if diff_blocks:
+        for block in diff_blocks:
+            lines = block.splitlines()
+            minus_lines = []
+            plus_lines = []
+            for line in lines:
+                if line.startswith('-') and not line.startswith('---'):
+                    minus_lines.append(line[1:])
+                elif line.startswith('+') and not line.startswith('+++'):
+                    plus_lines.append(line[1:])
+            
+            if minus_lines and plus_lines:
+                old_str = "\n".join(minus_lines)
+                new_str = "\n".join(plus_lines)
+                if old_str in new_content:
+                    new_content = new_content.replace(old_str, new_str, 1)
+    
+    if new_content == content:
+        new_content = content + f"\n\n# 🆕 AI Fix ({datetime.now().isoformat()}):\n# {fix_text[:2000]}\n"
+    
     requests.put(f"{base}/contents/{GITHUB_FILE_PATH}", headers=headers, json={
         "message": "🤖 AI Fix", "content": base64.b64encode(new_content.encode()).decode(), "sha": file_sha, "branch": new_branch
     })
@@ -1324,7 +1369,21 @@ def register_handlers():
 
     @bot.message_handler(commands=["gen_api"])
     def gen_api(m):
-        raw = generate_api_key(m.from_user.id)
+        uid = m.from_user.id
+        # Админу - бесплатно
+        if uid == ADMIN_ID:
+            with DbConn() as c:
+                c.cursor().execute("INSERT OR REPLACE INTO api_subs(user_id, plan, expires_at, requests_used, tokens_used) VALUES(?,?,?,0,0)",
+                                   (uid, "api_week_pro", time.time() + 3650*86400))
+        
+        with DbConn() as db_c:
+            cur = db_c.cursor(); cur.execute("SELECT plan FROM api_subs WHERE user_id=? AND expires_at>?", (uid, time.time()))
+            sub = cur.fetchone()
+        
+        if not sub:
+            return safe_send(uid, "❌ У вас нет активной подписки. Купите её в меню «🔑 API».")
+
+        raw = generate_api_key(uid)
         safe_photo(m.chat.id, IMG_BAL, f"🔑 **Ключ** ❄️\n\n<code>{raw}</code>\n\n⚠️ Сохрани!", parse_mode="HTML")
 
     @bot.callback_query_handler(func=lambda c: c.data == "menu_history")
@@ -1437,6 +1496,7 @@ def register_handlers():
         kb.add(types.InlineKeyboardButton("👥 Юзеры", callback_data="admin_users"), types.InlineKeyboardButton("💳 Платежи", callback_data="admin_payments"))
         kb.add(types.InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"), types.InlineKeyboardButton("🎁 Выдать", callback_data="admin_give_menu"))
         kb.add(types.InlineKeyboardButton("🤖 ИИ-Инженер", callback_data="admin_ai_chat"))
+        kb.add(types.InlineKeyboardButton("🔑 Выдать API", callback_data="admin_give_api"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_more"))
         safe_photo(c.from_user.id, IMG_MAIN, f"🛡 **Админ-панель** ❄️\n\n👥 Юзеров: {total}\n💳 Платежей: {row[0]} на {row[1]}₽", reply_markup=kb, parse_mode="Markdown")
 
@@ -1447,6 +1507,14 @@ def register_handlers():
         bot.answer_callback_query(c.id)
         upd(c.from_user.id, state="admin_ai_chat_wait")
         safe_send(c.from_user.id, "🤖 **ИИ-Инженер (Terra 6.1)** ❄️\n\nОтправь текст ошибки. Я передам его ИИ, и он предложит фикс.\n\n(Чтобы выйти, напиши /start)", parse_mode="Markdown")
+
+    # 🆕 ВЫДАЧА API
+    @bot.callback_query_handler(func=lambda c: c.data == "admin_give_api")
+    def cb_give_api(c):
+        if c.from_user.id != ADMIN_ID: return
+        bot.answer_callback_query(c.id)
+        safe_send(c.from_user.id, "🔑 **Выдача API-ключа** ❄️\n\nОтправь ID пользователя (число).\n\nКлюч будет выдан на 30 дней.", parse_mode="Markdown")
+        upd(c.from_user.id, state="admin_give_api_wait")
 
     @bot.callback_query_handler(func=lambda c: c.data == "admin_users")
     def cb_au(c):
@@ -1533,6 +1601,21 @@ def register_handlers():
             kb = types.InlineKeyboardMarkup()
             kb.add(types.InlineKeyboardButton("🐙 Создать PR", callback_data="gh_pr_fix"))
             return safe_send(uid, f"🤖 **Ответ ИИ:**\n\n{proposal[:3500]}", reply_markup=kb, parse_mode="Markdown")
+
+        # 🆕 ВЫДАЧА API
+        if state == "admin_give_api_wait" and uid == ADMIN_ID:
+            try:
+                target = int(text.strip())
+                if not get_user(target): return safe_send(uid, "❌ Пользователь не найден.")
+                with DbConn() as c:
+                    c.cursor().execute("INSERT OR REPLACE INTO api_subs(user_id, plan, expires_at, requests_used, tokens_used) VALUES(?,?,?,0,0)", (target, "api_week_pro", time.time() + 30*86400))
+                raw = generate_api_key(target, days=30)
+                upd(uid, state="")
+                safe_send(uid, f"✅ Выдано пользователю <code>{target}</code>:\n\n🔑 <code>{raw}</code>", parse_mode="HTML")
+                safe_send(target, f"🎁 Вам выдан API-ключ на 30 дней!\n\n🔑 <code>{raw}</code>", parse_mode="HTML")
+                return
+            except ValueError:
+                return safe_send(uid, "❌ Введите числовой ID.")
 
         if state == "admin_give_wait" and uid == ADMIN_ID:
             try:
@@ -1714,48 +1797,8 @@ def main():
     threading.Thread(target=payment_poller, daemon=True).start()
     threading.Thread(target=ai_fixer_worker, daemon=True).start()
     threading.Thread(target=safe_polling, daemon=True).start()
-    log.info("❄️ Neuro Studio v83 started ❄️")
+    log.info("❄️ Neuro Studio v84 started ❄️")
     while not SHUTDOWN.is_set(): time.sleep(1)
 
 if __name__ == "__main__":
     main()
-
-
-# 🆕 AI Fix (2026-11-12T14:27:15.846660):
-# В логе **две независимые ошибки**.
-
-1. В `handle_text` переменная `u` используется до присваивания. Python считает её локальной, поскольку в функции где-то есть присваивание `u`, но для этого сообщения выполнение до него не дошло.
-2. `generate_api_key` вставляет значение в `api_keys.key_hash`, однако в используемой SQLite-базе такого столбца нет. Вероятно, код и схема БД разных версий, но по одному логу нельзя определить, как безопасно перенести существующие ключи.
-
-### Предварительный патч для `handle_text`
-
-Если в проекте `get_user(user_id)` возвращает словарь состояния пользователя, исправление может выглядеть так:
-
-```diff
---- a/bot.py
-+++ b/bot.py
-@@ -1499,1 +1499,3 @@
--    text = m.text.strip(); state = u.get("state", "")
-+    u = get_user(m.from_user.id)
-+    text = m.text.strip()
-+    state = u.get("state", "")
-```
-
-**Это условный патч:** имя и контракт `get_user` из лога неизвестны. Нужно использовать существующий в проекте способ загрузки пользователя и убедиться, что он не возвращает `None`. Если `u` уже загружается выше в одной из веток, правильнее перенести эту загрузку в общий участок до первого использования, не дублируя её.
-
-### Что делать со схемой БД
-
-Простого `ALTER TABLE ... ADD COLUMN key_hash` может быть недостаточно: старые записи останутся без хеша, а другие обязательные столбцы старой схемы могут по-прежнему ломать `INSERT`. Кроме того, необходимо сохранить совместимость проверки и отзыва существующих ключей.
-
-Чтобы подготовить **применимый unified diff для обеих ошибок**, пришлите:
-
-- код `handle_text` целиком и функцию получения пользователя;
-- код создания/миграции `api_keys`, а также `generate_api_key` и проверки ключей;
-- результат для **той же БД, которую открывает бот**:
-  ```sql
-  SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'api_keys';
-  PRAGMA table_info(api_keys);
-  PRAGMA index_list(api_keys);
-  ```
-
-Перед миграцией действующей базы сделайте её резервную копию. Не присылайте сами API-ключи.
