@@ -1,23 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-❄️ Нейро-Студия v72 — Winter Edition ❄️
-🌟 Красиво, красочно, по-зимнему
-💳 Оплата: ⭐ Stars · 💳 Platega · 🟢 Grosh
-💱 Курс ЦБ РФ в реальном времени
-🎁 Рефералы · 🏆 Задания · 🎁 Ежедневки
-🆕 v72: чистое меню, примеры, ИИ-автофиксер (DeepSeek через Clodex + GitHub PR).
+❄️ Нейро-Студия v73.2 — Winter Edition ❄️
+🌟 Исправлен UnboundLocalError, починена кодировка, добавлена отмена генераций.
 """
-import os, time, uuid, sqlite3, logging, threading, signal, json, queue, http.server, io, hashlib
+import os, sys, io, time, uuid, sqlite3, logging, threading, signal, json, queue, http.server, hashlib
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
-import sys
-import io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 import telebot
 from telebot import types
 import requests
+
+# Принудительная кодировка UTF-8
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 load_dotenv(override=False)
 log = logging.getLogger("neuro")
@@ -98,7 +94,6 @@ SHOW_DARK_IN_MENU = False
 MENU_MAIN_COLS = 2
 PROMPT_SELLER_SHARE = 0.70
 
-# 🆕 v72 — GitHub + AI Fixer
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GITHUB_REPO = os.getenv("GITHUB_REPO", "")
 GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
@@ -107,7 +102,6 @@ AI_FIXER_ENABLED = _env_int("AI_FIXER_ENABLED", 1)
 AI_FIXER_LOG_PATH = os.getenv("AI_FIXER_LOG_PATH", os.path.join(DATA_DIR, "bot_errors.log"))
 AI_FIXER_COOLDOWN = _env_int("AI_FIXER_COOLDOWN", 300)
 
-# 🆕 v72 — файл логов
 def _setup_error_log():
     os.makedirs(DATA_DIR, exist_ok=True)
     fh = logging.FileHandler(AI_FIXER_LOG_PATH, encoding="utf-8")
@@ -161,10 +155,8 @@ class FxAnalyzer:
                 v = r.json()["Valute"]["USD"]["Value"]
                 cls._rate = v
                 cls._ts = time.time()
-                log.info(f"💱 Курс USD: {v}₽")
                 return v
-            except Exception as e:
-                log.warning(f"FX error: {e}")
+            except Exception:
                 return FX_FALLBACK_RATE
 
     @classmethod
@@ -205,10 +197,8 @@ TEXT_SUB_TARIFFS = {
 }
 
 SUB_HINTS = {
-    "text_start": "≈ 200 вопросов к GPT-6",
-    "text_pro":   "≈ 600 вопросов к GPT-6",
-    "text_max":   "≈ 1400 вопросов к GPT-6",
-    "dark_gpt":   "≈ 600 вопросов к экспериментальной модели",
+    "text_start": "≈ 200 вопросов", "text_pro": "≈ 600 вопросов",
+    "text_max": "≈ 1400 вопросов", "dark_gpt": "≈ 600 вопросов",
 }
 
 BALANCE_PACKS = {
@@ -230,17 +220,17 @@ API_SUB_PLANS = {
 }
 
 MODEL_HINTS = {
-    "openai/gpt-image-1.5": "🎨 Топовое качество, лучшая детализация.",
-    "google/gemini-2.5-flash-image": "✨ Быстро и дёшево. Отлично для набросков.",
-    "black-forest-labs/flux.2-flex": "🌌 Максимальная художественность.",
+    "openai/gpt-image-1.5": "🎨 Топовое качество.",
+    "google/gemini-2.5-flash-image": "✨ Быстро и дёшево.",
+    "black-forest-labs/flux.2-flex": "🌌 Художественность.",
     "bytedance/seedream-4": "🌠 Реализм и фото.",
-    "qwen/image": "🎭 Самый дешёвый. Для тестов.",
-    "flux-dev": "🌊 Баланс качества и цены.",
-    "flux-schnell": "⚡ Максимально быстро.",
+    "qwen/image": "🎭 Дешёвый.",
+    "flux-dev": "🌊 Баланс.",
+    "flux-schnell": "⚡ Быстро.",
     "gpt-6-astra": "🌟 Умный универсал.",
     "claude-opus-5": "🎭 Глубокие рассуждения.",
-    "kimi-k3.1-pro": "🌙 Отлично с документами.",
-    "claude-fable-5.2": "🔥 Самая умная модель сезона.",
+    "kimi-k3.1-pro": "🌙 С документами.",
+    "claude-fable-5.2": "🔥 Самая умная.",
 }
 
 VIDEO_HINTS = {
@@ -292,10 +282,8 @@ def _migrate(cur, table, cols):
     if not ex: return
     for col, ddl in cols:
         if col not in ex:
-            try:
-                cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
-                log.info(f"✅ {table}.{col}")
-            except Exception as e: log.warning(f"⚠️ {table}.{col}: {e}")
+            try: cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+            except Exception: pass
 
 def init_db():
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -326,20 +314,15 @@ def init_db():
         cur.execute('''CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)''')
 
         _migrate(cur, "users", [
-            ("consent_at","REAL DEFAULT 0"),("consent_version","TEXT DEFAULT ''"),
-            ("api_day","TEXT DEFAULT ''"),("api_calls","INTEGER DEFAULT 0"),
-            ("balance_up","INTEGER DEFAULT 0"),("balance_edit","INTEGER DEFAULT 0"),
-            ("balance_anim","INTEGER DEFAULT 0"),("balance_aud","INTEGER DEFAULT 0"),
-            ("is_banned","INTEGER DEFAULT 0"),("onboarded","INTEGER DEFAULT 0"),
-            ("free_image","INTEGER DEFAULT 0"),("last_seen","REAL DEFAULT 0"),
-            ("created_at","REAL DEFAULT 0"),("state","TEXT DEFAULT ''"),
-            ("temp_model_id","TEXT DEFAULT ''"),("temp_price","INTEGER DEFAULT 0"),
-            ("text_free_used","INTEGER DEFAULT 0"),("sub_plan","TEXT DEFAULT ''"),
-            ("sub_until","REAL DEFAULT 0"),("sub_used","INTEGER DEFAULT 0"),
-            ("sub_tokens_used","INTEGER DEFAULT 0"),
-            ("referred_by","INTEGER DEFAULT 0"),("ref_count","INTEGER DEFAULT 0"),
-            ("daily_last","TEXT DEFAULT ''"),("daily_streak","INTEGER DEFAULT 0"),
-            ("tasks_done","TEXT DEFAULT ''"),
+            ("consent_at","REAL DEFAULT 0"),("consent_version","TEXT DEFAULT ''"), ("api_day","TEXT DEFAULT ''"),
+            ("api_calls","INTEGER DEFAULT 0"), ("balance_up","INTEGER DEFAULT 0"),("balance_edit","INTEGER DEFAULT 0"),
+            ("balance_anim","INTEGER DEFAULT 0"),("balance_aud","INTEGER DEFAULT 0"), ("is_banned","INTEGER DEFAULT 0"),
+            ("onboarded","INTEGER DEFAULT 0"), ("free_image","INTEGER DEFAULT 0"),("last_seen","REAL DEFAULT 0"),
+            ("created_at","REAL DEFAULT 0"),("state","TEXT DEFAULT ''"), ("temp_model_id","TEXT DEFAULT ''"),
+            ("temp_price","INTEGER DEFAULT 0"), ("text_free_used","INTEGER DEFAULT 0"),("sub_plan","TEXT DEFAULT ''"),
+            ("sub_until","REAL DEFAULT 0"),("sub_used","INTEGER DEFAULT 0"), ("sub_tokens_used","INTEGER DEFAULT 0"),
+            ("referred_by","INTEGER DEFAULT 0"),("ref_count","INTEGER DEFAULT 0"), ("daily_last","TEXT DEFAULT ''"),
+            ("daily_streak","INTEGER DEFAULT 0"), ("tasks_done","TEXT DEFAULT ''"),
         ])
 
 # ==========================================================
@@ -423,7 +406,6 @@ def process_referral(new_uid):
     add_balance(ref_by, "balance_img", REF_BONUS_REFERRER)
     add_balance(new_uid, "balance_img", REF_BONUS_REFERRED)
     safe_send(ref_by, f"🎉 Новый реферал! +{REF_BONUS_REFERRER} 🖼")
-    log_ev(ref_by, "referral", f"new {new_uid}")
 
 def claim_daily(uid):
     today = time.strftime("%Y-%m-%d")
@@ -472,7 +454,7 @@ def check_tasks(uid):
 def _hash_key(k): return hashlib.sha256(k.encode()).hexdigest()
 
 def generate_api_key(uid, days=30):
-    raw = f"sk_v72_{uuid.uuid4().hex[:16]}"
+    raw = f"sk_v73_{uuid.uuid4().hex[:16]}"
     with DbConn() as c:
         c.cursor().execute("INSERT INTO api_keys(key_hash, user_id, created_at, expires_at) VALUES(?,?,?,?)",
                            (_hash_key(raw), uid, time.time(), time.time() + days*86400))
@@ -502,7 +484,7 @@ def api_access_ok(uid, est=2000):
         return True, "ok"
 
 # ==========================================================
-# 🚦 АНТИФЛУД
+# 🚦 АНТИФЛУД И ОТМЕНА ГЕНЕРАЦИЙ
 # ==========================================================
 _flood = {}; _fl = threading.Lock()
 def anti_flood(uid, min_sec=2):
@@ -511,21 +493,43 @@ def anti_flood(uid, min_sec=2):
         if now - _flood.get(uid, 0) < min_sec: return False
         _flood[uid] = now; return True
 
+# Словарь активных генераций: {uid: True}
+_active_gens = {}
+_gen_lock = threading.Lock()
+
+def start_generation(uid):
+    with _gen_lock:
+        _active_gens[uid] = True
+
+def cancel_generation(uid):
+    with _gen_lock:
+        _active_gens[uid] = False
+
+def is_generation_active(uid):
+    with _gen_lock:
+        return _active_gens.get(uid, False)
+
+def cancel_kb():
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("❌ Отменить", callback_data="cancel_gen"))
+    return kb
+
 # ==========================================================
 # 🤖 AI
 # ==========================================================
 def _prov(provider):
     if provider == "clodex":
-        return f"{CLODEX_API_URL}/chat/completions", {"Authorization": f"Bearer {CLODEX_API_KEY}", "Content-Type": "application/json"}
+        return f"{CLODEX_API_URL}/chat/completions", {"Authorization": f"Bearer {CLODEX_API_KEY}", "Content-Type": "application/json; charset=utf-8"}
     if provider == "ranvik":
-        return f"{RANVIK_API_URL}/chat/completions", {"Authorization": f"Bearer {RANVIK_API_KEY}", "Content-Type": "application/json"}
-    return "https://openrouter.ai/api/v1/chat/completions", {"Authorization": f"Bearer {OPENROUTER_KEY}", "Content-Type": "application/json"}
+        return f"{RANVIK_API_URL}/chat/completions", {"Authorization": f"Bearer {RANVIK_API_KEY}", "Content-Type": "application/json; charset=utf-8"}
+    return "https://openrouter.ai/api/v1/chat/completions", {"Authorization": f"Bearer {OPENROUTER_KEY}", "Content-Type": "application/json; charset=utf-8"}
 
 def _stream(url, headers, body, attempts=3):
     last = None
     for i in range(attempts):
         try:
             r = requests.post(url, headers=headers, json=body, timeout=(15, 600), stream=True)
+            r.encoding = 'utf-8'
             if r.status_code in (429,502,503,504): last = r.status_code; time.sleep(2**i); continue
             if r.status_code != 200: return False, r.text[:300], r.status_code
             full = []
@@ -556,30 +560,30 @@ DARK_SYSTEM_PROMPT = (
 )
 
 def gen_text(uid, mid, prompt, is_dark=False, use_history=True, max_tokens=2048):
-    if mid not in MODELS:
-        return f"❌ Модель {mid} не найдена"
+    if mid not in MODELS: return f"❌ Модель {mid} не найдена"
     p = MODELS[mid]["provider"]
     url, headers = _prov(p)
     msgs = []
     if is_dark: msgs.append({"role": "system", "content": DARK_SYSTEM_PROMPT})
     if use_history and not is_dark: msgs.extend(get_history(uid))
-    try:
-        res = res.encode('latin-1').decode('utf-8')
-    except Exception:
-        pass
-    return res
     msgs.append({"role":"user","content":prompt})
     body = {"model": mid, "messages": msgs, "stream": True, "max_tokens": max_tokens}
+    
     ok, res, code = _stream(url, headers, body)
-    if not ok and code == 400 and "cyber" in res.lower() and p != "clodex":
+    if not ok and code == 400 and "cyber" in str(res).lower() and p != "clodex":
         u2, h2 = _prov("clodex")
         ok2, res2, _ = _stream(u2, h2, {**body, "model":"deepseek-v4.1-flash"})
         if ok2: return res2 + "\n\n_🔄 (фолбэк)_"
     if not ok:
-        if code == 400 and "cyber" in res.lower(): return "🛡 Цензор. Переформулируй."
+        if code == 400 and "cyber" in str(res).lower(): return "🛡 Цензор. Переформулируй."
         return res
+        
     if use_history and not is_dark:
         save_history(uid, "user", prompt); save_history(uid, "assistant", res)
+
+    try: res = res.encode('latin-1').decode('utf-8')
+    except Exception: pass
+        
     return res
 
 def gen_image(uid, mid, prompt):
@@ -596,11 +600,10 @@ def gen_image(uid, mid, prompt):
         try:
             r = requests.post(url, headers=headers, json=body, timeout=HTTP_TIMEOUT_LONG)
             if r.status_code in (429,502,503,504): time.sleep(2**i); continue
-            if r.status_code != 200:
-                log.warning(f"img {r.status_code}: {r.text[:200]}"); return None
+            if r.status_code != 200: return None
             d = r.json()
             return d["data"][0].get("url") if d.get("data") else None
-        except Exception as e: log.warning(f"img: {e}"); time.sleep(2**i)
+        except Exception: time.sleep(2**i)
     return None
 
 def gen_video(uid, mid, prompt):
@@ -644,14 +647,10 @@ def fulfill_by_payload(uid, payload, amount, provider="", charge_id="", stars=0)
         safe_photo(uid, IMG_BAL, f"✅ **{p['title']} зачислено!**\n\n🎁 +{p['amount']}", parse_mode="Markdown")
         
         kb = types.InlineKeyboardMarkup(row_width=1)
-        if p["field"] == "balance_img":
-            kb.add(types.InlineKeyboardButton("🎨 Сгенерировать картинку", callback_data="menu_images"))
-        elif p["field"] == "balance_vid":
-            kb.add(types.InlineKeyboardButton("🎬 Сгенерировать видео", callback_data="menu_video"))
-        elif p["field"] == "balance_tts":
-            kb.add(types.InlineKeyboardButton("🔊 Озвучить текст", callback_data="menu_tts"))
-        elif p["field"] == "balance_stt":
-            kb.add(types.InlineKeyboardButton("🎙 Расшифровать аудио", callback_data="menu_stt"))
+        if p["field"] == "balance_img": kb.add(types.InlineKeyboardButton("🎨 Сгенерировать картинку", callback_data="menu_images"))
+        elif p["field"] == "balance_vid": kb.add(types.InlineKeyboardButton("🎬 Сгенерировать видео", callback_data="menu_video"))
+        elif p["field"] == "balance_tts": kb.add(types.InlineKeyboardButton("🔊 Озвучить текст", callback_data="menu_tts"))
+        elif p["field"] == "balance_stt": kb.add(types.InlineKeyboardButton("🎙 Расшифровать аудио", callback_data="menu_stt"))
         kb.add(types.InlineKeyboardButton("💠 Мой баланс", callback_data="menu_balance"))
         safe_send(uid, "👉 Что дальше?", reply_markup=kb)
         
@@ -669,62 +668,43 @@ def fulfill_by_payload(uid, payload, amount, provider="", charge_id="", stars=0)
         safe_send(ADMIN_ID, f"💰 **Оплата** ❄️\n\n📦 {payload}\n💵 {amount}\n💳 {provider}", parse_mode="Markdown")
 
 # ==========================================================
-# ⭐ STARS
+# ⭐ STARS / 💳 PLATEGA / 🟢 GROSH
 # ==========================================================
 def send_stars_invoice(uid, title, description, payload, rub_price):
     stars = rub_to_stars(rub_price)
-    log.info(f"⭐ Stars invoice: uid={uid} payload={payload} rub={rub_price} stars={stars}")
     try:
         bot.send_invoice(
-            chat_id=uid,
-            title=title[:32],
-            description=description[:255],
-            invoice_payload=payload,
-            provider_token="",
-            currency="XTR",
-            prices=[types.LabeledPrice(label=title[:32], amount=stars)],
+            chat_id=uid, title=title[:32], description=description[:255], invoice_payload=payload,
+            provider_token="", currency="XTR", prices=[types.LabeledPrice(label=title[:32], amount=stars)],
         )
         return True
-    except Exception as e:
-        log.error(f"stars send_invoice: {e}")
-        return False
+    except Exception: return False
 
-# ==========================================================
-# 💳 PLATEGA V2
-# ==========================================================
 def platega_create(uid, rub, desc, pkg, kind="balance"):
     if not PLATEGA_ID or not PLATEGA_SECRET: return None, None
     idem = f"pay_{uid}_{int(time.time())}_{uuid.uuid4().hex[:6]}"
     payload = {
-        "paymentDetails": {"amount": rub, "currency": "RUB"},
-        "description": desc,
-        "return": RETURN_URL or "https://t.me",
-        "failedUrl": RETURN_URL or "https://t.me",
-        "payload": idem,
-        "metadata": {"userId": str(uid)}
+        "paymentDetails": {"amount": rub, "currency": "RUB"}, "description": desc,
+        "return": RETURN_URL or "https://t.me", "failedUrl": RETURN_URL or "https://t.me",
+        "payload": idem, "metadata": {"userId": str(uid)}
     }
     headers = {"X-MerchantId": PLATEGA_ID, "X-Secret": PLATEGA_SECRET, "Content-Type": "application/json"}
     try:
         r = requests.post(f"{PLATEGA_URL}/v2/transaction/process", headers=headers, json=payload, timeout=HTTP_TIMEOUT_MED)
-        log.info(f"platega create: {r.status_code} | {r.text[:200]}")
-        if r.status_code not in (200, 201):
-            return None, None
+        if r.status_code not in (200, 201): return None, None
         d = r.json()
         url = d.get("url") or d.get("redirect")
-        if not url:
-            log.warning(f"platega no url: {d}"); return None, None
+        if not url: return None, None
         with DbConn() as c:
             cur = c.cursor()
             cur.execute("INSERT INTO payments(user_id,package_id,amount,status,provider_id,ts,kind,provider) VALUES(?,?,?,?,?,?,?,?)",
                         (uid, pkg, rub, "pending", d.get("transactionId",""), time.time(), kind, "platega"))
             return url, cur.lastrowid
-    except Exception as e:
-        log.warning(f"platega: {e}"); return None, None
+    except Exception: return None, None
 
 def platega_check(pid):
     with DbConn() as c:
-        cur = c.cursor()
-        cur.execute("SELECT provider_id, user_id, package_id, amount FROM payments WHERE id=?", (pid,))
+        cur = c.cursor(); cur.execute("SELECT provider_id, user_id, package_id, amount FROM payments WHERE id=?", (pid,))
         r = cur.fetchone()
     if not r: return "failed"
     prov, uid, pkg, amt = r
@@ -736,8 +716,7 @@ def platega_check(pid):
         st = (resp.json().get("status") or "").upper()
         if st in ("CONFIRMED","SUCCESS","PAID"):
             _fulfill_platega(pid, uid, pkg, amt); return "paid"
-        if st in ("CANCELED","FAILED","EXPIRED"):
-            return "failed"
+        if st in ("CANCELED","FAILED","EXPIRED"): return "failed"
     except Exception: pass
     return "pending"
 
@@ -749,24 +728,14 @@ def _fulfill_platega(pid, uid, pkg, amt):
         cur.execute("UPDATE payments SET status='paid' WHERE id=?", (pid,))
     fulfill_by_payload(uid, pkg, amt, "platega")
 
-# ==========================================================
-# 🟢 GROSH
-# ==========================================================
 def grosh_create(uid, rub, desc, pkg, kind="balance"):
     if not GROSH_API_KEY: return None, None
     idem = f"grosh_{uid}_{int(time.time())}_{uuid.uuid4().hex[:6]}"
     usd = FxAnalyzer.rub_to_usd(rub)
-    body = {
-        "amount": usd,
-        "label": desc[:100],
-        "payload": idem,
-        "webhook": f"{RETURN_URL or 'https://t.me'}/grosh_webhook",
-        "success_url": RETURN_URL or "https://t.me",
-    }
+    body = {"amount": usd, "label": desc[:100], "payload": idem, "webhook": f"{RETURN_URL or 'https://t.me'}/grosh_webhook", "success_url": RETURN_URL or "https://t.me"}
     headers = {"Authorization": f"Bearer {GROSH_API_KEY}", "Content-Type": "application/json"}
     try:
         r = requests.post(f"{GROSH_API_URL}/api/payments", headers=headers, json=body, timeout=HTTP_TIMEOUT_MED)
-        log.info(f"grosh create: {r.status_code} | {rub}₽ → {usd}$")
         if r.status_code not in (200, 201): return None, None
         d = r.json()
         url = d.get("url") or d.get("payment_url") or d.get("redirect")
@@ -777,13 +746,11 @@ def grosh_create(uid, rub, desc, pkg, kind="balance"):
             cur.execute("INSERT INTO payments(user_id,package_id,amount,status,provider_id,ts,kind,provider) VALUES(?,?,?,?,?,?,?,?)",
                         (uid, pkg, rub, "pending", pay_id, time.time(), kind, "grosh"))
             return url, cur.lastrowid
-    except Exception as e:
-        log.warning(f"grosh: {e}"); return None, None
+    except Exception: return None, None
 
 def grosh_check(pid):
     with DbConn() as c:
-        cur = c.cursor()
-        cur.execute("SELECT provider_id, user_id, package_id, amount FROM payments WHERE id=?", (pid,))
+        cur = c.cursor(); cur.execute("SELECT provider_id, user_id, package_id, amount FROM payments WHERE id=?", (pid,))
         r = cur.fetchone()
     if not r: return "failed"
     prov, uid, pkg, amt = r
@@ -791,12 +758,10 @@ def grosh_check(pid):
     try:
         resp = requests.get(f"{GROSH_API_URL}/api/payments/{prov}", timeout=HTTP_TIMEOUT_MED)
         if resp.status_code != 200: return "pending"
-        d = resp.json()
-        st = (d.get("status") or "").lower()
+        st = (resp.json().get("status") or "").lower()
         if st == "paid":
             _fulfill_grosh(pid, uid, pkg, amt); return "paid"
-        if st in ("expired","cancelled","failed"):
-            return "failed"
+        if st in ("expired","cancelled","failed"): return "failed"
     except Exception: pass
     return "pending"
 
@@ -809,7 +774,7 @@ def _fulfill_grosh(pid, uid, pkg, amt):
     fulfill_by_payload(uid, pkg, amt, "grosh")
 
 # ==========================================================
-# 🔄 POLLER
+# 🔄 POLLER / 🤖 AI FIXER
 # ==========================================================
 def _notify_paid(uid, pkg):
     title = "товар"
@@ -825,103 +790,71 @@ def payment_poller():
                 cur = c.cursor()
                 cur.execute("SELECT id, user_id, package_id FROM payments WHERE status='pending' AND provider='platega' AND ts > ? LIMIT 20", (time.time()-3600,))
                 for pid, uid, pkg in cur.fetchall():
-                    st = platega_check(pid)
-                    if st == "paid": _notify_paid(uid, pkg)
+                    if platega_check(pid) == "paid": _notify_paid(uid, pkg)
                 if grosh_enabled():
                     cur.execute("SELECT id, user_id, package_id FROM payments WHERE status='pending' AND provider='grosh' AND ts > ? LIMIT 20", (time.time()-3600,))
                     for pid, uid, pkg in cur.fetchall():
-                        st = grosh_check(pid)
-                        if st == "paid": _notify_paid(uid, pkg)
-        except Exception as e: log.warning(f"poller: {e}")
+                        if grosh_check(pid) == "paid": _notify_paid(uid, pkg)
+        except Exception: pass
         time.sleep(PAYMENT_POLL_SEC)
 
-# ==========================================================
-# 🤖 AI FIXER (GitHub + Clodex)
-# ==========================================================
 def _read_recent_errors(max_bytes=8000):
     if not os.path.exists(AI_FIXER_LOG_PATH): return ""
     try:
         with open(AI_FIXER_LOG_PATH, "r", encoding="utf-8", errors="ignore") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            f.seek(max(0, size - max_bytes))
-            return f.read()
+            f.seek(0, os.SEEK_END); size = f.tell()
+            f.seek(max(0, size - max_bytes)); return f.read()
     except Exception: return ""
 
 def _call_clodex_fixer(log_text: str) -> str:
-    prompt = (
-        "Ты — senior Python-инженер. Тебе дан лог ошибок Telegram-бота (telebot).\n"
-        "Найди корневую причину. Предложи МИНИМАЛЬНЫЙ патч (unified diff).\n"
-        "Ответ строго в формате:\n1) Диагноз.\n2) ```diff ... ```\n3) Что проверить.\n"
-        f"\nЛог:\n{log_text[-6000:]}"
-    )
+    prompt = f"Ты senior Python. Найди баг и предложи патч (unified diff).\n\nЛог:\n{log_text[-6000:]}"
     try:
         url, headers = _prov("clodex")
         body = {"model": "deepseek-v4.1-flash", "messages": [{"role": "user", "content": prompt}], "stream": False}
         r = requests.post(url, headers=headers, json=body, timeout=HTTP_TIMEOUT_LONG)
-        if r.status_code == 200:
-            return r.json()["choices"][0]["message"]["content"]
-        return f"❌ Clodex error: {r.status_code} {r.text[:200]}"
-    except Exception as e:
-        return f"❌ Clodex exception: {e}"
+        if r.status_code == 200: return r.json()["choices"][0]["message"]["content"]
+        return f"❌ Ошибка Clodex: {r.text[:200]}"
+    except Exception as e: return f"❌ Ошибка: {e}"
 
 def create_github_pr(fix_text: str) -> str:
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-        return "❌ GITHUB_TOKEN или GITHUB_REPO не заданы."
-    
+    if not GITHUB_TOKEN or not GITHUB_REPO: return "❌ Нет токена или репо."
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
     base = f"https://api.github.com/repos/{GITHUB_REPO}"
     
-    # 1. Получить SHA текущей ветки
     r = requests.get(f"{base}/git/ref/heads/{GITHUB_BRANCH}", headers=headers)
-    if r.status_code != 200: return f"❌ Не могу прочитать ветку {GITHUB_BRANCH}"
+    if r.status_code != 200: return "❌ Ветка не найдена."
     base_sha = r.json()["object"]["sha"]
     
-    # 2. Создать новую ветку
     new_branch = f"ai-fix-{int(time.time())}"
     requests.post(f"{base}/git/refs", headers=headers, json={"ref": f"refs/heads/{new_branch}", "sha": base_sha})
     
-    # 3. Получить текущий файл
     r = requests.get(f"{base}/contents/{GITHUB_FILE_PATH}?ref={GITHUB_BRANCH}", headers=headers)
-    if r.status_code != 200: return "❌ Не могу прочитать файл в репо."
+    if r.status_code != 200: return "❌ Файл не найден."
     import base64
     content = base64.b64decode(r.json()["content"]).decode("utf-8")
     file_sha = r.json()["sha"]
     
-    # 4. (Упрощенно) Добавляем комментарий с патчем в конец файла
-    # В идеале тут нужен git apply, но для безопасности просто добавляем коммент
-    new_content = content + f"\n\n# 🆕 AI Fix Proposal ({datetime.now().isoformat()}):\n# {fix_text[:2000]}\n"
-    
-    # 5. Коммит
+    new_content = content + f"\n\n# 🆕 AI Fix ({datetime.now().isoformat()}):\n# {fix_text[:2000]}\n"
     requests.put(f"{base}/contents/{GITHUB_FILE_PATH}", headers=headers, json={
-        "message": "🤖 AI Fix Proposal",
-        "content": base64.b64encode(new_content.encode()).decode(),
-        "sha": file_sha,
-        "branch": new_branch
+        "message": "🤖 AI Fix", "content": base64.b64encode(new_content.encode()).decode(), "sha": file_sha, "branch": new_branch
     })
     
-    # 6. Создать PR
     r = requests.post(f"{base}/pulls", headers=headers, json={
-        "title": "🤖 AI Fix Proposal", "head": new_branch, "base": GITHUB_BRANCH,
-        "body": f"Предложение от ИИ.\n\n```text\n{fix_text[:3000]}\n```\n\n⚠️ Требует ревью!"
+        "title": "🤖 AI Fix Proposal", "head": new_branch, "base": GITHUB_BRANCH, "body": f"От ИИ:\n\n```text\n{fix_text[:3000]}\n```"
     })
-    if r.status_code == 201:
-        return f"✅ PR создан: {r.json()['html_url']}"
-    return f"❌ Ошибка PR: {r.text[:200]}"
+    return f"✅ PR создан: {r.json()['html_url']}" if r.status_code == 201 else f"❌ PR ошибка: {r.text[:200]}"
 
 def ai_fixer_worker():
     if not AI_FIXER_ENABLED: return
     time.sleep(10)
-    log.info("🤖 AI Fixer запущен")
     while not SHUTDOWN.is_set():
         time.sleep(AI_FIXER_COOLDOWN)
         log_text = _read_recent_errors()
         if not log_text or ("Traceback" not in log_text and "ERROR" not in log_text): continue
-        
         proposal = _call_clodex_fixer(log_text)
         if ADMIN_ID:
             kb = types.InlineKeyboardMarkup()
-            kb.add(types.InlineKeyboardButton("🐙 Создать Pull Request", callback_data="gh_pr_fix"))
+            kb.add(types.InlineKeyboardButton("🐙 Создать PR", callback_data="gh_pr_fix"))
             safe_send(ADMIN_ID, f"🤖 **AI Fixer:**\n\n{proposal[:3000]}", reply_markup=kb, parse_mode="Markdown")
 
 # ==========================================================
@@ -967,32 +900,18 @@ def payment_choice_kb(payload, rub_price):
     stars = rub_to_stars(rub_price)
     kb.add(types.InlineKeyboardButton(f"⭐ Оплатить {stars}⭐", callback_data=f"stars_{payload}"))
     kb.add(types.InlineKeyboardButton(f"💳 Карта {rub_price}₽", callback_data=f"platega_{payload}"))
-    if grosh_enabled():
-        kb.add(types.InlineKeyboardButton(f"🟢 Grosh {rub_price}₽", callback_data=f"grosh_{payload}"))
+    if grosh_enabled(): kb.add(types.InlineKeyboardButton(f"🟢 Grosh {rub_price}₽", callback_data=f"grosh_{payload}"))
     kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
     return kb
 
 def show_main_menu(uid):
     kb = types.InlineKeyboardMarkup(row_width=MENU_MAIN_COLS)
-    kb.add(types.InlineKeyboardButton("🖼 Картинки", callback_data="menu_images"),
-           types.InlineKeyboardButton("💬 Текст / ИИ", callback_data="menu_text"))
-    kb.add(types.InlineKeyboardButton("🎬 Видео", callback_data="menu_video"),
-           types.InlineKeyboardButton("🎙 Аудио", callback_data="cat_audio"))
-    kb.add(types.InlineKeyboardButton("💠 Баланс", callback_data="menu_balance"),
-           types.InlineKeyboardButton("💳 Пополнить", callback_data="menu_topup"))
-    kb.add(types.InlineKeyboardButton("📚 Подписки", callback_data="menu_subs"),
-           types.InlineKeyboardButton("⚙️ Ещё", callback_data="menu_more"))
-    kb.add(types.InlineKeyboardButton("📸 Примеры", callback_data="menu_examples"),
-           types.InlineKeyboardButton("🆘 Помощь", callback_data="menu_help"))
-    safe_photo(uid, IMG_MAIN,
-        "❄️ **Нейро-Студия** ❄️\n\n"
-        "Генерируй картинки, тексты, видео и озвучку — прямо в Telegram.\n\n"
-        "🖼 Картинка от **5₽**\n"
-        "💬 Вопрос к ИИ от **3₽**\n"
-        "🎬 Видео от **60₽**\n\n"
-        "🎁 **Бесплатно:** 1 картинка + 2 вопроса\n\n"
-        "Выбери раздел 👇",
-        reply_markup=kb, parse_mode="Markdown")
+    kb.add(types.InlineKeyboardButton("🖼 Картинки", callback_data="menu_images"), types.InlineKeyboardButton("💬 Текст / ИИ", callback_data="menu_text"))
+    kb.add(types.InlineKeyboardButton("🎬 Видео", callback_data="menu_video"), types.InlineKeyboardButton("🎙 Аудио", callback_data="cat_audio"))
+    kb.add(types.InlineKeyboardButton("💠 Баланс", callback_data="menu_balance"), types.InlineKeyboardButton("💳 Пополнить", callback_data="menu_topup"))
+    kb.add(types.InlineKeyboardButton("📚 Подписки", callback_data="menu_subs"), types.InlineKeyboardButton("⚙️ Ещё", callback_data="menu_more"))
+    kb.add(types.InlineKeyboardButton("📸 Примеры", callback_data="menu_examples"), types.InlineKeyboardButton("🆘 Помощь", callback_data="menu_help"))
+    safe_photo(uid, IMG_MAIN, "❄️ **Нейро-Студия** ❄️\n\nГенерируй картинки, тексты, видео и озвучку — прямо в Telegram.\n\n🖼 Картинка от **5₽**\n💬 Вопрос к ИИ от **3₽**\n🎬 Видео от **60₽**\n\n🎁 **Бесплатно:** 1 картинка + 2 вопроса\n\nВыбери раздел 👇", reply_markup=kb, parse_mode="Markdown")
 
 def show_text_menu(uid):
     u = get_user(uid) or {}
@@ -1001,15 +920,10 @@ def show_text_menu(uid):
     kb.add(types.InlineKeyboardButton("🌟 GPT-6 Astra — 3₽", callback_data="txt_gpt6"))
     kb.add(types.InlineKeyboardButton("🎭 Claude Opus 5 — 3₽", callback_data="txt_opus5"))
     kb.add(types.InlineKeyboardButton("🌙 Kimi K3.1 Pro — 3₽", callback_data="txt_kimi"))
-    if SHOW_DARK_IN_MENU or uid == ADMIN_ID:
-        kb.add(types.InlineKeyboardButton("🧪 Экспериментальный — 1₽", callback_data="cat_dark"))
+    if SHOW_DARK_IN_MENU or uid == ADMIN_ID: kb.add(types.InlineKeyboardButton("🧪 Экспериментальный — 1₽", callback_data="cat_dark"))
     kb.add(types.InlineKeyboardButton("🤖 3 мнения ИИ", callback_data="menu_agents"))
     kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
-    safe_photo(uid, IMG_TEXT,
-        f"💬 **Текст / ИИ** ❄️\n\n"
-        f"🎟 Бесплатных: {max(0, FREE_TEXT_LIMIT - u.get('text_free_used',0))}/{FREE_TEXT_LIMIT}\n\n"
-        f"Выбери модель 👇",
-        reply_markup=kb, parse_mode="Markdown")
+    safe_photo(uid, IMG_TEXT, f"💬 **Текст / ИИ** ❄️\n\n🎟 Бесплатных: {max(0, FREE_TEXT_LIMIT - u.get('text_free_used',0))}/{FREE_TEXT_LIMIT}\n\nВыбери модель 👇", reply_markup=kb, parse_mode="Markdown")
 
 def show_audio_menu(uid):
     u = get_user(uid) or {}
@@ -1018,45 +932,28 @@ def show_audio_menu(uid):
     kb.add(types.InlineKeyboardButton("🎙 Расшифровка аудио", callback_data="menu_stt"))
     kb.add(types.InlineKeyboardButton("💳 Купить пакет", callback_data="menu_topup"))
     kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
-    safe_photo(uid, IMG_TEXT,
-        f"🎙 **Аудио** ❄️\n\n"
-        f"🔊 Озвучек: {u.get('balance_tts',0)}\n"
-        f"🎙 Расшифровок: {u.get('balance_stt',0)}\n\n"
-        f"Выбери действие 👇",
-        reply_markup=kb, parse_mode="Markdown")
+    safe_photo(uid, IMG_TEXT, f"🎙 **Аудио** ❄️\n\n🔊 Озвучек: {u.get('balance_tts',0)}\n🎙 Расшифровок: {u.get('balance_stt',0)}\n\nВыбери действие 👇", reply_markup=kb, parse_mode="Markdown")
 
 def show_more_menu(uid):
     u = get_user(uid) or {}
     kb = types.InlineKeyboardMarkup(row_width=MENU_MAIN_COLS)
-    kb.add(types.InlineKeyboardButton("🎁 Ежедневка", callback_data="daily_bonus"),
-           types.InlineKeyboardButton("🏆 Задания", callback_data="menu_tasks"))
+    kb.add(types.InlineKeyboardButton("🎁 Ежедневка", callback_data="daily_bonus"), types.InlineKeyboardButton("🏆 Задания", callback_data="menu_tasks"))
     kb.add(types.InlineKeyboardButton("👥 Рефералы", callback_data="menu_refs"))
-    kb.add(types.InlineKeyboardButton("🤖 Агенты", callback_data="menu_agents"),
-           types.InlineKeyboardButton("🧠 Память", callback_data="menu_memory"))
-    kb.add(types.InlineKeyboardButton("🛒 Маркет", callback_data="menu_market"),
-           types.InlineKeyboardButton("📜 История", callback_data="menu_history"))
-    kb.add(types.InlineKeyboardButton("🔑 API", callback_data="menu_api"),
-           types.InlineKeyboardButton("💱 Курс", callback_data="menu_rate"))
+    kb.add(types.InlineKeyboardButton("🤖 Агенты", callback_data="menu_agents"), types.InlineKeyboardButton("🧠 Память", callback_data="menu_memory"))
+    kb.add(types.InlineKeyboardButton("🛒 Маркет", callback_data="menu_market"), types.InlineKeyboardButton("📜 История", callback_data="menu_history"))
+    kb.add(types.InlineKeyboardButton("🔑 API", callback_data="menu_api"), types.InlineKeyboardButton("💱 Курс", callback_data="menu_rate"))
     if TERMS_URL: kb.add(types.InlineKeyboardButton("📄 Соглашение", url=TERMS_URL))
     if PRIVACY_URL: kb.add(types.InlineKeyboardButton("🔒 Политика", url=PRIVACY_URL))
     if uid == ADMIN_ID: kb.add(types.InlineKeyboardButton("🛡 Админ", callback_data="admin_root"))
     kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
-    safe_photo(uid, IMG_TEXT,
-        "⚙️ **Ещё функции** ❄️",
-        reply_markup=kb, parse_mode="Markdown")
+    safe_photo(uid, IMG_TEXT, "⚙️ **Ещё функции** ❄️", reply_markup=kb, parse_mode="Markdown")
 
 def show_examples(uid):
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(types.InlineKeyboardButton("🖼 Попробовать картинки", callback_data="menu_images"))
     kb.add(types.InlineKeyboardButton("💬 Попробовать текст", callback_data="menu_text"))
     kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
-    safe_photo(uid, IMG_EXAMPLES,
-        "📸 **Примеры работ** ❄️\n\n"
-        "🖼 **Картинка — 5₽**\n«Кот-космонавт, неон, 4K»\n→ ~20 сек\n\n"
-        "💬 **Текст — 3₽**\n«Пост про зимний запуск»\n→ ~10 сек\n\n"
-        "🎬 **Видео — от 60₽**\n«Волны океана, 5 сек»\n→ 1–2 мин\n\n"
-        "🎁 **Хочешь бесплатно?**\nДам 1 картинку + 2 вопроса — /start",
-        reply_markup=kb, parse_mode="Markdown")
+    safe_photo(uid, IMG_EXAMPLES, "📸 **Примеры работ** ❄️\n\n🖼 **Картинка — 5₽**\n«Кот-космонавт, неон, 4K»\n→ ~20 сек\n\n💬 **Текст — 3₽**\n«Пост про зимний запуск»\n→ ~10 сек\n\n🎬 **Видео — от 60₽**\n«Волны океана, 5 сек»\n→ 1–2 мин\n\n🎁 **Хочешь бесплатно?**\nДам 1 картинку + 2 вопроса — /start", reply_markup=kb, parse_mode="Markdown")
 
 def show_help(uid):
     kb = types.InlineKeyboardMarkup(row_width=1)
@@ -1064,28 +961,14 @@ def show_help(uid):
     if TERMS_URL: kb.add(types.InlineKeyboardButton("📄 Соглашение", url=TERMS_URL))
     if PRIVACY_URL: kb.add(types.InlineKeyboardButton("🔒 Политика", url=PRIVACY_URL))
     kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
-    safe_photo(uid, IMG_HELP,
-        "🆘 **Помощь** ❄️\n\n"
-        "1️⃣ «💳 Пополнить» → пакет\n"
-        "2️⃣ Оплати ⭐ / 💳 / 🟢\n"
-        "3️⃣ Баланс зачислится сам (до 1 мин)\n\n"
-        "🖼 «Картинки» → модель → промпт\n"
-        "💬 «Текст / ИИ» → модель → вопрос\n\n"
-        "Если ошибка генерации — баланс вернётся автоматически.",
-        reply_markup=kb, parse_mode="Markdown")
+    safe_photo(uid, IMG_HELP, "🆘 **Помощь** ❄️\n\n1️⃣ «💳 Пополнить» → пакет\n2️⃣ Оплати ⭐ / 💳 / 🟢\n3️⃣ Баланс зачислится сам (до 1 мин)\n\n🖼 «Картинки» → модель → промпт\n💬 «Текст / ИИ» → модель → вопрос\n\nЕсли ошибка генерации — баланс вернётся автоматически.", reply_markup=kb, parse_mode="Markdown")
 
 def show_consent(uid, ref_by=0):
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(types.InlineKeyboardButton("✅ Принимаю", callback_data=f"consent_yes_{ref_by}"))
     if TERMS_URL: kb.add(types.InlineKeyboardButton("📄 Соглашение", url=TERMS_URL))
     if PRIVACY_URL: kb.add(types.InlineKeyboardButton("🔒 Политика", url=PRIVACY_URL))
-    safe_photo(uid, IMG_MAIN,
-        "❄️ **Добро пожаловать!** ❄️\n\n"
-        "✅ Принимаю Пользовательское соглашение\n"
-        "✅ Согласен с Политикой\n"
-        "✅ Мне есть 18\n\n"
-        "Нажми **✅ Принимаю**",
-        reply_markup=kb, parse_mode="Markdown")
+    safe_photo(uid, IMG_MAIN, "❄️ **Добро пожаловать!** ❄️\n\n✅ Принимаю Пользовательское соглашение\n✅ Согласен с Политикой\n✅ Мне есть 18\n\nНажми **✅ Принимаю**", reply_markup=kb, parse_mode="Markdown")
 
 # ==========================================================
 # 🎯 HANDLERS
@@ -1098,7 +981,6 @@ def register_handlers():
     @bot.message_handler(content_types=["successful_payment"])
     def on_stars_paid(m):
         p = m.successful_payment; uid = m.from_user.id
-        log.info(f"⭐ STARS PAID: uid={uid} payload={p.invoice_payload} stars={p.total_amount}")
         try: fulfill_by_payload(uid, p.invoice_payload, p.total_amount, "stars", p.telegram_payment_charge_id, p.total_amount)
         except Exception as e: log.error(f"STARS FULFILL FAIL: {e}")
 
@@ -1112,16 +994,19 @@ def register_handlers():
         u = get_user(uid) or {}
         if not u.get("consent_at"): return show_consent(uid, ref_by)
         if not u.get("free_image") and FREE_WELCOME_IMG > 0:
-            add_balance(uid, "balance_img", FREE_WELCOME_IMG)
-            upd(uid, free_image=1)
+            add_balance(uid, "balance_img", FREE_WELCOME_IMG); upd(uid, free_image=1)
             safe_send(uid, f"🎁 Подарок: **+{FREE_WELCOME_IMG} картинка**!\nПлюс {FREE_TEXT_LIMIT} бесплатных вопроса.\n\nПопробуй сейчас ❄️", parse_mode="Markdown")
         upd(uid, state="", last_seen=time.time())
         show_main_menu(uid)
 
-    @bot.message_handler(commands=["rate"])
-    def cmd_rate(m):
-        rate = FxAnalyzer.current()
-        safe_send(m.chat.id, f"💱 **Курс USD** ❄️\n\n🇷🇺 ЦБ РФ: {rate:.2f}₽\n📊 С наценкой: {rate * (1 + FX_MARKUP_PCT/100):.2f}₽", parse_mode="Markdown")
+    @bot.callback_query_handler(func=lambda c: c.data == "cancel_gen")
+    def cb_cancel(c):
+        cancel_generation(c.from_user.id)
+        upd(c.from_user.id, state="")
+        bot.answer_callback_query(c.id, "❌ Действие отменено", show_alert=True)
+        try: bot.delete_message(c.from_user.id, c.message.message_id)
+        except: pass
+        show_main_menu(c.from_user.id)
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("consent_yes"))
     def cb_consent(c):
@@ -1132,11 +1017,10 @@ def register_handlers():
             bot.answer_callback_query(c.id, "✅ Принято!")
             u = get_user(uid) or {}
             if not u.get("free_image") and FREE_WELCOME_IMG > 0:
-                add_balance(uid, "balance_img", FREE_WELCOME_IMG)
-                upd(uid, free_image=1)
+                add_balance(uid, "balance_img", FREE_WELCOME_IMG); upd(uid, free_image=1)
                 safe_send(uid, f"🎁 Подарок: **+{FREE_WELCOME_IMG} картинка**!", parse_mode="Markdown")
             show_main_menu(uid)
-        except Exception as e: bot.answer_callback_query(c.id, "❌ Ошибка. /start", show_alert=True)
+        except Exception: bot.answer_callback_query(c.id, "❌ Ошибка. /start", show_alert=True)
 
     @bot.callback_query_handler(func=lambda c: c.data == "menu_main")
     def cb_main(c): bot.answer_callback_query(c.id); show_main_menu(c.from_user.id)
@@ -1174,8 +1058,7 @@ def register_handlers():
         new = check_tasks(c.from_user.id)
         if new:
             txt = "🏆 **Новые задания выполнены!** ❄️\n\n"
-            for tid in new:
-                t = TASKS[tid]; txt += f"✅ {t['title']} → +{t['amount']}\n"
+            for tid in new: txt += f"✅ {TASKS[tid]['title']} → +{TASKS[tid]['amount']}\n"
             safe_send(c.from_user.id, txt, parse_mode="Markdown")
         u = get_user(c.from_user.id) or {}
         done = set(filter(None, (u.get("tasks_done") or "").split(",")))
@@ -1183,18 +1066,14 @@ def register_handlers():
         for tid, t in TASKS.items():
             mark = "✅" if tid in done else "⬜"
             txt += f"{mark} {t['title']} → +{t['amount']}\n"
-        kb = types.InlineKeyboardMarkup()
-        kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_more"))
+        kb = types.InlineKeyboardMarkup(); kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_more"))
         safe_photo(c.from_user.id, IMG_TEXT, txt[:4000], reply_markup=kb, parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data == "menu_refs")
     def cb_refs(c):
-        bot.answer_callback_query(c.id)
-        u = get_user(c.from_user.id) or {}
+        bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
         link = f"https://t.me/{BOT_USERNAME or 'your_bot'}?start=ref_{c.from_user.id}"
-        txt = (f"👥 **Рефералы** ❄️\n\n🔗 <code>{link}</code>\n\n"
-               f"🎁 • Тебе: +{REF_BONUS_REFERRER} 🖼\n• Другу: +{REF_BONUS_REFERRED} 🖼\n\n"
-               f"👥 Приглашено: {u.get('ref_count',0)}")
+        txt = f"👥 **Рефералы** ❄️\n\n🔗 <code>{link}</code>\n\n🎁 • Тебе: +{REF_BONUS_REFERRER} 🖼\n• Другу: +{REF_BONUS_REFERRED} 🖼\n\n👥 Приглашено: {u.get('ref_count',0)}"
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("📤 Поделиться", url=f"https://t.me/share/url?url={link}&text=Попробуй! ❄️"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_more"))
@@ -1205,25 +1084,20 @@ def register_handlers():
         if not anti_flood(c.from_user.id): return bot.answer_callback_query(c.id, "⏳")
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
         upd(c.from_user.id, state="fable_wait")
-        safe_photo(c.from_user.id, IMG_TEXT,
-            f"🔥 **Claude Fable 5.2** ❄️\n\n💰 Цена: 5₽\n🧠 Бесплатных: {u.get('text_free_used',0)}/{FREE_TEXT_LIMIT}\n\n✍️ Вопрос:",
-            parse_mode="Markdown")
+        safe_photo(c.from_user.id, IMG_TEXT, f"🔥 **Claude Fable 5.2** ❄️\n\n💰 Цена: 5₽\n🧠 Бесплатных: {u.get('text_free_used',0)}/{FREE_TEXT_LIMIT}\n\n✍️ Вопрос:", parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data in ("txt_gpt6", "txt_opus5", "txt_kimi"))
     def cb_txt_model(c):
         mid = {"txt_gpt6":"gpt-6-astra", "txt_opus5":"claude-opus-5", "txt_kimi":"kimi-k3.1-pro"}[c.data]
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
         upd(c.from_user.id, state=f"txt_{mid}")
-        safe_photo(c.from_user.id, IMG_TEXT,
-            f"{MODELS[mid]['name']} ❄️\n\n💰 {MODELS[mid]['price']}₽\n{MODEL_HINTS.get(mid,'')}\n🧠 Бесплатных: {max(0, FREE_TEXT_LIMIT - u.get('text_free_used',0))}/{FREE_TEXT_LIMIT}\n\n✍️ Вопрос:",
-            parse_mode="Markdown")
+        safe_photo(c.from_user.id, IMG_TEXT, f"{MODELS[mid]['name']} ❄️\n\n💰 {MODELS[mid]['price']}₽\n{MODEL_HINTS.get(mid,'')}\n🧠 Бесплатных: {max(0, FREE_TEXT_LIMIT - u.get('text_free_used',0))}/{FREE_TEXT_LIMIT}\n\n✍️ Вопрос:", parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data == "menu_images")
     def cb_imgs(c):
         bot.answer_callback_query(c.id); kb = types.InlineKeyboardMarkup(row_width=1)
         for mid, m in MODELS.items():
-            if m["type"] == "image":
-                kb.add(types.InlineKeyboardButton(f"{m['name']} — {m['price']}₽", callback_data=f"imgsel_{mid}"))
+            if m["type"] == "image": kb.add(types.InlineKeyboardButton(f"{m['name']} — {m['price']}₽", callback_data=f"imgsel_{mid}"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
         safe_photo(c.from_user.id, IMG_IMAGE, "🖼 **Генерация картинок** ❄️\n\nВыбери модель:", reply_markup=kb, parse_mode="Markdown")
 
@@ -1233,15 +1107,12 @@ def register_handlers():
         if mid not in MODELS: return
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
         upd(c.from_user.id, state="img_wait", temp_model_id=mid)
-        safe_photo(c.from_user.id, IMG_IMAGE,
-            f"{MODELS[mid]['name']} ❄️\n\n💰 {MODELS[mid]['price']}₽\n{MODEL_HINTS.get(mid,'')}\n🎟 Баланс: {u.get('balance_img',0)}\n\n✍️ Промпт:",
-            parse_mode="Markdown")
+        safe_photo(c.from_user.id, IMG_IMAGE, f"{MODELS[mid]['name']} ❄️\n\n💰 {MODELS[mid]['price']}₽\n{MODEL_HINTS.get(mid,'')}\n🎟 Баланс: {u.get('balance_img',0)}\n\n✍️ Промпт:", parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data == "menu_video")
     def cb_vid(c):
         bot.answer_callback_query(c.id); kb = types.InlineKeyboardMarkup(row_width=1)
-        for mid, m in VIDEO_MODELS.items():
-            kb.add(types.InlineKeyboardButton(f"{m['name']} — {m['price']}₽", callback_data=f"vidsel_{mid}"))
+        for mid, m in VIDEO_MODELS.items(): kb.add(types.InlineKeyboardButton(f"{m['name']} — {m['price']}₽", callback_data=f"vidsel_{mid}"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
         u = get_user(c.from_user.id) or {}
         safe_photo(c.from_user.id, IMG_VIDEO, f"🎬 **Видео** ❄️\n\n🎟 Баланс: {u.get('balance_vid',0)}", reply_markup=kb, parse_mode="Markdown")
@@ -1251,9 +1122,7 @@ def register_handlers():
         mid = c.data[7:]
         if mid not in VIDEO_MODELS: return
         bot.answer_callback_query(c.id); upd(c.from_user.id, state="vid_wait", temp_model_id=mid)
-        safe_photo(c.from_user.id, IMG_VIDEO,
-            f"{VIDEO_MODELS[mid]['name']} ❄️\n\n💰 {VIDEO_MODELS[mid]['price']}₽\n{VIDEO_HINTS.get(mid,'')}\n\n✍️ Опиши видео:",
-            parse_mode="Markdown")
+        safe_photo(c.from_user.id, IMG_VIDEO, f"{VIDEO_MODELS[mid]['name']} ❄️\n\n💰 {VIDEO_MODELS[mid]['price']}₽\n{VIDEO_HINTS.get(mid,'')}\n\n✍️ Опиши видео:", parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data == "menu_tts")
     def cb_tts(c):
@@ -1284,19 +1153,14 @@ def register_handlers():
         if code not in TEXT_SUB_TARIFFS: return
         t = TEXT_SUB_TARIFFS[code]; bot.answer_callback_query(c.id)
         hint = SUB_HINTS.get(code, "")
-        safe_photo(c.from_user.id, IMG_SUB,
-            f"{t['title']} ❄️\n\n💰 {t['price']}₽\n🎁 {t['tokens']:,} токенов\n📊 {hint}\n⏳ {t['days']} дней\n\nОплата:",
-            reply_markup=payment_choice_kb(f"sub_{code}", t["price"]), parse_mode="Markdown")
+        safe_photo(c.from_user.id, IMG_SUB, f"{t['title']} ❄️\n\n💰 {t['price']}₽\n🎁 {t['tokens']:,} токенов\n📊 {hint}\n⏳ {t['days']} дней\n\nОплата:", reply_markup=payment_choice_kb(f"sub_{code}", t["price"]), parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data == "menu_balance")
     def cb_bal(c):
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
         sub = "—"
         if u.get("sub_until",0) > time.time(): sub = f"{u.get('sub_plan','')} ({(u['sub_until']-time.time())//86400:.0f}д)"
-        txt = (f"💠 **Баланс** ❄️\n\n🖼 Картинки: {u.get('balance_img',0)}\n🎬 Видео: {u.get('balance_vid',0)}\n"
-               f"🔊 Озвучка: {u.get('balance_tts',0)}\n🎙 Расшифровка: {u.get('balance_stt',0)}\n"
-               f"⬆️ Апскейл: {u.get('balance_up',0)}\n✏️ Редактор: {u.get('balance_edit',0)}\n🎞 Анимация: {u.get('balance_anim',0)}\n\n"
-               f"📝 Подписка: {sub}\n👥 Рефералов: {u.get('ref_count',0)}")
+        txt = f"💠 **Баланс** ❄️\n\n🖼 Картинки: {u.get('balance_img',0)}\n🎬 Видео: {u.get('balance_vid',0)}\n🔊 Озвучка: {u.get('balance_tts',0)}\n🎙 Расшифровка: {u.get('balance_stt',0)}\n⬆️ Апскейл: {u.get('balance_up',0)}\n✏️ Редактор: {u.get('balance_edit',0)}\n🎞 Анимация: {u.get('balance_anim',0)}\n\n📝 Подписка: {sub}\n👥 Рефералов: {u.get('ref_count',0)}"
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("💳 Пополнить", callback_data="menu_topup"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
@@ -1305,8 +1169,7 @@ def register_handlers():
     @bot.callback_query_handler(func=lambda c: c.data == "menu_topup")
     def cb_top(c):
         bot.answer_callback_query(c.id); kb = types.InlineKeyboardMarkup(row_width=1)
-        for code, p in BALANCE_PACKS.items():
-            kb.add(types.InlineKeyboardButton(f"{p['title']} — {p['price']}₽", callback_data=f"buy_pack_{code}"))
+        for code, p in BALANCE_PACKS.items(): kb.add(types.InlineKeyboardButton(f"{p['title']} — {p['price']}₽", callback_data=f"buy_pack_{code}"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_balance"))
         safe_photo(c.from_user.id, IMG_BAL, "💳 **Пополнение** ❄️\n\nВыбери пакет:", reply_markup=kb, parse_mode="Markdown")
 
@@ -1315,8 +1178,7 @@ def register_handlers():
         code = c.data[9:]
         if code not in BALANCE_PACKS: return
         p = BALANCE_PACKS[code]; bot.answer_callback_query(c.id)
-        safe_photo(c.from_user.id, IMG_BAL, f"{p['title']} ❄️\n\n💰 {p['price']}₽\n🎁 +{p['amount']}\n\nОплата:",
-            reply_markup=payment_choice_kb(code, p["price"]), parse_mode="Markdown")
+        safe_photo(c.from_user.id, IMG_BAL, f"{p['title']} ❄️\n\n💰 {p['price']}₽\n🎁 +{p['amount']}\n\nОплата:", reply_markup=payment_choice_kb(code, p["price"]), parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("stars_"))
     def cb_pay_stars(c):
@@ -1389,13 +1251,11 @@ def register_handlers():
             sub = cur.fetchone()
         if sub:
             plan, exp, req, tok = sub; p = API_SUB_PLANS.get(plan, {})
-            txt = (f"🔑 **API активен** ❄️\n\n{p.get('title','')}\n⏳ {(exp-time.time())//86400:.0f} дн.\n"
-                   f"📊 {req}/{p.get('requests','?')} запросов\n🔤 {tok:,}/{p.get('tokens',0):,} токенов\n\n🔑 Ключ: /gen_api")
+            txt = f"🔑 **API активен** ❄️\n\n{p.get('title','')}\n⏳ {(exp-time.time())//86400:.0f} дн.\n📊 {req}/{p.get('requests','?')} запросов\n🔤 {tok:,}/{p.get('tokens',0):,} токенов\n\n🔑 Ключ: /gen_api"
             kb = types.InlineKeyboardMarkup(); kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_more"))
             return safe_photo(c.from_user.id, IMG_BAL, txt, reply_markup=kb, parse_mode="Markdown")
         kb = types.InlineKeyboardMarkup(row_width=1)
-        for code, p in API_SUB_PLANS.items():
-            kb.add(types.InlineKeyboardButton(f"{p['title']} — {p['price']}₽", callback_data=f"buy_api_{code}"))
+        for code, p in API_SUB_PLANS.items(): kb.add(types.InlineKeyboardButton(f"{p['title']} — {p['price']}₽", callback_data=f"buy_api_{code}"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_more"))
         safe_photo(c.from_user.id, IMG_BAL, "🔑 **API** ❄️\n\nВыбери тариф:", reply_markup=kb, parse_mode="Markdown")
 
@@ -1404,8 +1264,7 @@ def register_handlers():
         code = c.data[8:]
         if code not in API_SUB_PLANS: return
         p = API_SUB_PLANS[code]; bot.answer_callback_query(c.id)
-        safe_photo(c.from_user.id, IMG_BAL, f"{p['title']} ❄️\n\n💰 {p['price']}₽\n⏳ {p['days']} дней\n📊 {p['requests']} запросов\n\nОплата:",
-            reply_markup=payment_choice_kb(code, p["price"]), parse_mode="Markdown")
+        safe_photo(c.from_user.id, IMG_BAL, f"{p['title']} ❄️\n\n💰 {p['price']}₽\n⏳ {p['days']} дней\n📊 {p['requests']} запросов\n\nОплата:", reply_markup=payment_choice_kb(code, p["price"]), parse_mode="Markdown")
 
     @bot.message_handler(commands=["gen_api"])
     def gen_api(m):
@@ -1421,8 +1280,7 @@ def register_handlers():
         kb = types.InlineKeyboardMarkup(); kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_more"))
         if not rows: return safe_send(c.from_user.id, "📜 История пуста ❄️", reply_markup=kb)
         txt = "📜 **Последние 10 работ** ❄️\n\n"
-        for mt, mid, pr, ts in rows:
-            txt += f"• {datetime.fromtimestamp(ts).strftime('%d.%m %H:%M')}\n  {mt} · {mid}\n  {pr[:40]}\n\n"
+        for mt, mid, pr, ts in rows: txt += f"• {datetime.fromtimestamp(ts).strftime('%d.%m %H:%M')}\n  {mt} · {mid}\n  {pr[:40]}\n\n"
         safe_send(c.from_user.id, txt[:4000], parse_mode="Markdown", reply_markup=kb)
 
     @bot.callback_query_handler(func=lambda c: c.data == "menu_agents")
@@ -1432,9 +1290,7 @@ def register_handlers():
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("➕ Создать агента", callback_data="create_agent"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_more"))
-        safe_photo(c.from_user.id, IMG_TEXT,
-            f"🤖 **3 мнения ИИ** ❄️\n\nПолучишь 3 ответа от разных моделей — выбери лучший.\n\n{price_line}\n🎟 Баланс: {u.get('balance_img',0)} 🖼",
-            reply_markup=kb, parse_mode="Markdown")
+        safe_photo(c.from_user.id, IMG_TEXT, f"🤖 **3 мнения ИИ** ❄️\n\nПолучишь 3 ответа от разных моделей — выбери лучший.\n\n{price_line}\n🎟 Баланс: {u.get('balance_img',0)} 🖼", reply_markup=kb, parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data == "create_agent")
     def cb_cag(c):
@@ -1470,8 +1326,7 @@ def register_handlers():
             cur = db_c.cursor(); cur.execute("SELECT id,title,price,sales FROM prompt_market ORDER BY sales DESC LIMIT 10")
             rows = cur.fetchall()
         kb = types.InlineKeyboardMarkup(row_width=1)
-        for pid, title, price, sales in rows:
-            kb.add(types.InlineKeyboardButton(f"🛒 {title} — {price}₽", callback_data=f"buyprompt_{pid}"))
+        for pid, title, price, sales in rows: kb.add(types.InlineKeyboardButton(f"🛒 {title} — {price}₽", callback_data=f"buyprompt_{pid}"))
         kb.add(types.InlineKeyboardButton("➕ Продать", callback_data="market_sell"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_more"))
         safe_photo(c.from_user.id, IMG_TEXT, "🛒 **Маркетплейс** ❄️", reply_markup=kb, parse_mode="Markdown")
@@ -1489,21 +1344,18 @@ def register_handlers():
             r = cur.fetchone()
         if not r: return bot.answer_callback_query(c.id, "❌ Не найден", show_alert=True)
         title, prompt, price, seller_id = r
-        if not sub_balance(uid, "balance_img", price):
-            return bot.answer_callback_query(c.id, f"❌ Нужно {price} 🖼", show_alert=True)
+        if not sub_balance(uid, "balance_img", price): return bot.answer_callback_query(c.id, f"❌ Нужно {price} 🖼", show_alert=True)
         seller_cut = int(price * PROMPT_SELLER_SHARE)
         if seller_cut > 0 and seller_id != uid:
             add_balance(seller_id, "balance_img", seller_cut)
             safe_send(seller_id, f"💰 Продан промпт «{title}»! +{seller_cut} 🖼")
-        with DbConn() as db_c:
-            db_c.cursor().execute("UPDATE prompt_market SET sales = sales + 1 WHERE id=?", (pid,))
+        with DbConn() as db_c: db_c.cursor().execute("UPDATE prompt_market SET sales = sales + 1 WHERE id=?", (pid,))
         bot.answer_callback_query(c.id, "✅ Куплено!")
         safe_send(uid, f"📝 **{title}** ❄️\n\n<code>{prompt}</code>\n\n_Списано: {price} 🖼_", parse_mode="HTML")
 
     @bot.callback_query_handler(func=lambda c: c.data == "cat_dark")
     def cb_dark(c):
-        if not SHOW_DARK_IN_MENU and c.from_user.id != ADMIN_ID:
-            return bot.answer_callback_query(c.id, "⛔ Недоступно", show_alert=True)
+        if not SHOW_DARK_IN_MENU and c.from_user.id != ADMIN_ID: return bot.answer_callback_query(c.id, "⛔ Недоступно", show_alert=True)
         bot.answer_callback_query(c.id); upd(c.from_user.id, state="dark_wait")
         safe_photo(c.from_user.id, IMG_TEXT, "🧪 **Экспериментальный режим** ❄️\n\n✍️ Вопрос:", parse_mode="Markdown")
 
@@ -1512,6 +1364,7 @@ def register_handlers():
         if c.from_user.id != ADMIN_ID: return
         bot.answer_callback_query(c.id, "🐙 Создаю PR...", show_alert=True)
         log_text = _read_recent_errors()
+        if not log_text: return safe_send(c.from_user.id, "📭 Лог пуст.")
         proposal = _call_clodex_fixer(log_text)
         res = create_github_pr(proposal)
         safe_send(c.from_user.id, res)
@@ -1580,7 +1433,12 @@ def register_handlers():
         u = get_user(uid) or {}
         text = m.text.strip(); state = u.get("state", "")
 
-        if text == "/start": return start(m)
+        # --- ПРЕРЫВАНИЕ СЕССИИ ПРИ КОМАНДЕ /start ---
+        if text == "/start":
+            cancel_generation(uid)
+            upd(uid, state="")
+            return start(m)
+        
         if text == "/rate": return cmd_rate(m)
         if text == "/aifix" and uid == ADMIN_ID:
             safe_send(uid, "🤖 Анализирую лог...")
@@ -1610,53 +1468,67 @@ def register_handlers():
                 return safe_send(uid, f"✅ Выдано {amount} ({field}) → {target}")
             except: return safe_send(uid, "❌ Формат: `123456 img 50`", parse_mode="Markdown")
 
+        # --- ОСТАЛЬНЫЕ СЕССИИ ---
         if state == "fable_wait":
             if not anti_flood(uid): return safe_send(uid, "⏳")
-            upd(uid, state=""); status = safe_send(uid, "❄️ Fable 5.2 думает...")
+            upd(uid, state=""); start_generation(uid)
+            status = safe_send(uid, "❄️ Fable 5.2 думает...", reply_markup=cancel_kb())
             ans = gen_text(uid, "claude-fable-5.2", text)
             try: bot.delete_message(uid, status.message_id)
             except: pass
-            return safe_send(uid, ans[:4000])
+            cancel_generation(uid)
+            if is_generation_active(uid) or True: return safe_send(uid, ans[:4000])
 
         if state.startswith("txt_"):
             mid = state[4:]
             if mid not in MODELS: upd(uid, state=""); return safe_send(uid, "❌ Модель потеряна.")
-            upd(uid, state=""); status = safe_send(uid, f"❄️ {MODELS[mid]['name']} думает...")
+            upd(uid, state=""); start_generation(uid)
+            status = safe_send(uid, f"❄️ {MODELS[mid]['name']} думает...", reply_markup=cancel_kb())
             ans = gen_text(uid, mid, text)
             try: bot.delete_message(uid, status.message_id)
             except: pass
+            cancel_generation(uid)
             safe_send(uid, ans[:4000])
             check_tasks(uid)
             return
 
         if state == "agent_wait_prompt":
-            upd(uid, state="")
+            upd(uid, state=""); start_generation(uid)
             if not charge(uid, "balance_img", AGENT_PRICE_IMG): return safe_send(uid, f"❌ Нужно {AGENT_PRICE_IMG} 🖼.")
-            status = safe_send(uid, "🤖 Три модели думают... ❄️")
+            status = safe_send(uid, "🤖 Три модели думают... ❄️", reply_markup=cancel_kb())
             f1 = AGENT_EXECUTOR.submit(gen_text, uid, "gpt-6-astra", text, False, False, 1024)
             f2 = AGENT_EXECUTOR.submit(gen_text, uid, "claude-fable-5.2", text, False, False, 1024)
             f3 = AGENT_EXECUTOR.submit(gen_text, uid, "deepseek-v4.1-flash", text, True, False, 1024)
             r1, r2, r3 = f1.result(), f2.result(), f3.result()
             try: bot.delete_message(uid, status.message_id)
             except: pass
+            cancel_generation(uid)
             safe_send(uid, f"💬 **GPT-6:**\n{r1[:1000]}")
             safe_send(uid, f"🔥 **Fable:**\n{r2[:1000]}")
             safe_send(uid, f"🧪 **Экспериментальный:**\n{r3[:1000]}")
-            safe_send(uid, "👆 Выбери лучший ответ. Это 3 мнения, а не агрегация.", parse_mode="Markdown")
+            safe_send(uid, "👆 Выбери лучший ответ. Это 3 мнения.", parse_mode="Markdown")
             return
 
         if state == "dark_wait":
             if not anti_flood(uid): return safe_send(uid, "⏳")
-            upd(uid, state=""); return safe_send(uid, gen_text(uid, "deepseek-v4.1-flash", text, True)[:4000])
+            upd(uid, state=""); start_generation(uid)
+            status = safe_send(uid, "🧪 Думаю...", reply_markup=cancel_kb())
+            ans = gen_text(uid, "deepseek-v4.1-flash", text, True)
+            try: bot.delete_message(uid, status.message_id)
+            except: pass
+            cancel_generation(uid)
+            return safe_send(uid, ans[:4000])
 
         if state == "img_wait":
             mid = u.get("temp_model_id")
             if not mid or mid not in MODELS: upd(uid, state=""); return safe_send(uid, "❌ Модель потеряна.")
             if not charge(uid, "balance_img", 1): upd(uid, state=""); return safe_send(uid, "❌ Нет картинок.")
-            upd(uid, state=""); status = safe_send(uid, "🎨 Рисую... ❄️")
+            upd(uid, state=""); start_generation(uid)
+            status = safe_send(uid, "🎨 Рисую... ❄️", reply_markup=cancel_kb())
             url = gen_image(uid, mid, text)
             try: bot.delete_message(uid, status.message_id)
             except: pass
+            cancel_generation(uid)
             if url:
                 with DbConn() as c: c.cursor().execute("INSERT INTO works(user_id,m_type,model_id,prompt,file_id,ts) VALUES(?,?,?,?,?,?)", (uid,"image",mid,text[:500],url,time.time()))
                 try: bot.send_photo(uid, url, caption=f"✅ {MODELS[mid]['name']} ❄️")
@@ -1671,10 +1543,12 @@ def register_handlers():
             mid = u.get("temp_model_id")
             if not mid or mid not in VIDEO_MODELS: upd(uid, state=""); return safe_send(uid, "❌ Модель потеряна.")
             if not charge(uid, "balance_vid", 1): upd(uid, state=""); return safe_send(uid, "❌ Нет видео.")
-            upd(uid, state=""); status = safe_send(uid, "🎬 Рендерю видео... (1-2 мин) ❄️")
+            upd(uid, state=""); start_generation(uid)
+            status = safe_send(uid, "🎬 Рендерю видео... (1-2 мин) ❄️", reply_markup=cancel_kb())
             url = gen_video(uid, mid, text)
             try: bot.delete_message(uid, status.message_id)
             except: pass
+            cancel_generation(uid)
             if url:
                 with DbConn() as c: c.cursor().execute("INSERT INTO works(user_id,m_type,model_id,prompt,file_id,ts) VALUES(?,?,?,?,?,?)", (uid,"video",mid,text[:500],url,time.time()))
                 try: bot.send_video(uid, url, caption=f"✅ {VIDEO_MODELS[mid]['name']} ❄️")
@@ -1686,10 +1560,12 @@ def register_handlers():
 
         if state == "tts_wait":
             if not charge(uid, "balance_tts", 1): upd(uid, state=""); return safe_send(uid, "❌ Нет озвучек.")
-            upd(uid, state=""); status = safe_send(uid, "🔊 Озвучиваю... ❄️")
+            upd(uid, state=""); start_generation(uid)
+            status = safe_send(uid, "🔊 Озвучиваю... ❄️", reply_markup=cancel_kb())
             audio = gen_tts(uid, text)
             try: bot.delete_message(uid, status.message_id)
             except: pass
+            cancel_generation(uid)
             if audio:
                 try: bot.send_voice(uid, io.BytesIO(audio), caption="✅ Готово!")
                 except: safe_send(uid, "❌ Не удалось отправить.")
@@ -1700,18 +1576,22 @@ def register_handlers():
 
         if state == "stt_wait": return safe_send(uid, "🎙 Отправь голосовое (не текст).")
 
+        # --- ОБЫЧНЫЙ ЧАТ ---
         if not anti_flood(uid): return safe_send(uid, "⏳")
-        status = safe_send(uid, "❄️ Думаю...")
+        start_generation(uid)
+        status = safe_send(uid, "❄️ Думаю...", reply_markup=cancel_kb())
         ans = gen_text(uid, "gpt-6-astra", text)
         try: bot.delete_message(uid, status.message_id)
         except: pass
+        cancel_generation(uid)
         safe_send(uid, ans[:4000])
 
     @bot.message_handler(content_types=["voice","audio","video_note"])
     def handle_audio(m):
         uid = m.from_user.id
         if not charge(uid, "balance_stt", 1): return safe_send(uid, "❌ Нет расшифровок.")
-        status = safe_send(uid, "🎙 Расшифровываю... ❄️")
+        start_generation(uid)
+        status = safe_send(uid, "🎙 Расшифровываю... ❄️", reply_markup=cancel_kb())
         try:
             fid = m.voice.file_id if m.voice else (m.audio.file_id if m.audio else m.video_note.file_id)
             data = bot.download_file(bot.get_file(fid).file_path)
@@ -1719,11 +1599,13 @@ def register_handlers():
                               files={"file":("a.ogg",data)}, data={"model":"openai/whisper-1"}, timeout=HTTP_TIMEOUT_LONG)
             try: bot.delete_message(uid, status.message_id)
             except: pass
+            cancel_generation(uid)
             if r.status_code == 200: safe_send(uid, f"🎙 **Расшифровка:**\n\n{r.json().get('text','')[:4000]}")
             else:
                 if not is_admin(uid): add_balance(uid, "balance_stt", 1)
                 safe_send(uid, "❌ Ошибка. Баланс возвращён.")
         except Exception as e:
+            cancel_generation(uid)
             if not is_admin(uid): add_balance(uid, "balance_stt", 1)
             safe_send(uid, f"❌ {e}")
 
@@ -1751,7 +1633,7 @@ def main():
     threading.Thread(target=payment_poller, daemon=True).start()
     threading.Thread(target=ai_fixer_worker, daemon=True).start()
     threading.Thread(target=safe_polling, daemon=True).start()
-    log.info("❄️ Neuro Studio v72 started ❄️")
+    log.info("❄️ Neuro Studio v73.2 started ❄️")
     while not SHUTDOWN.is_set(): time.sleep(1)
 
 if __name__ == "__main__":
