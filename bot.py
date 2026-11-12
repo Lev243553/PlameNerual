@@ -1756,3 +1756,10 @@ if __name__ == "__main__":
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="cancel_gen"))
     return kb
+
+
+# 🆕 AI Fix (2026-11-12T20:23:34.510758):
+# def input_kb():
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="cancel_gen"))
+    return kb
