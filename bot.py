@@ -1496,11 +1496,10 @@ def register_handlers():
 
     @bot.message_handler(content_types=["text"])
     def handle_text(m):
-        text = m.text.strip(); state = u.get("state", "")
-        if state == "admin_ai_chat_wait" and uid == ADMIN_ID:
             uid = m.from_user.id
             if not m.text: return
             u = get_user(uid) or {}
+            text = m.text.strip(); state = u.get("state", "")
             if u.get("is_banned"): return safe_send(uid, "⛔ Вы забанены.")
         
 
