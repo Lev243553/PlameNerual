@@ -1874,3 +1874,43 @@ if __name__ == "__main__":
         )
 
     return raw
+
+
+# 🆕 AI Fix (2026-11-12T17:58:43.482218):
+# def init_db():
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+    with DbConn() as c:
+        cur = c.cursor()
+        cur.execute("BEGIN IMMEDIATE")
+        try:
+            cur.execute("""CREATE TABLE IF NOT EXISTS users(
+                user_id INTEGER PRIMARY KEY, username TEXT, is_banned INTEGER DEFAULT 0,
+                balance_img INTEGER DEFAULT 0, balance_aud INTEGER DEFAULT 0, balance_vid INTEGER DEFAULT 0,
+                balance_tts INTEGER DEFAULT 0, balance_stt INTEGER DEFAULT 0, balance_edit INTEGER DEFAULT 0,
+                balance_anim INTEGER DEFAULT 0, balance_up INTEGER DEFAULT 0, text_free_used INTEGER DEFAULT 0,
+                sub_plan TEXT DEFAULT '', sub_until REAL DEFAULT 0, sub_used INTEGER DEFAULT 0,
+                sub_tokens_used INTEGER DEFAULT 0, state TEXT DEFAULT '', temp_model_id TEXT DEFAULT '',
+                temp_price INTEGER DEFAULT 0, free_image INTEGER DEFAULT 0, onboarded INTEGER DEFAULT 0,
+                last_seen REAL DEFAULT 0, created_at REAL DEFAULT 0, consent_at REAL DEFAULT 0,
+                consent_version TEXT DEFAULT '', api_day TEXT DEFAULT '', api_calls INTEGER DEFAULT 0,
+                referred_by INTEGER DEFAULT 0, ref_count INTEGER DEFAULT 0,
+                daily_last TEXT DEFAULT '', daily_streak INTEGER DEFAULT 0,
+                tasks_done TEXT DEFAULT '')""")
+
+            cur.execute("PRAGMA table_info(api_keys)")
+            key_columns = cur.fetchall()
+            required = {"key_hash", "user_id", "created_at", "expires_at"}
+
+            if key_columns:
+                names = {row[1] for row in key_columns}
+                incompatible_required_columns = any(
+                    row[1] not in required
+                    and row[3]
+                    and row[4] is None
+                    and not (row[5] and row[2].upper() == "INTEGER")
+                    for row in key_columns
+                )
+
+                if not required.issubset(names) or incompatible_required_columns:
+                    
