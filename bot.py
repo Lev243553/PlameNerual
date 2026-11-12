@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-❄️ Нейро-Студия v85 — Winter Edition ❄️
-🌟 ИИ-Инженер видит код и выдает готовые функции. Команда /update_code.
+❄️ Нейро-Студия v88 — Winter Edition ❄️
+🌟 Стабильный поллинг, чистая база, рабочий ИИ-Инженер.
 """
 import os, sys, io, time, uuid, sqlite3, logging, threading, signal, json, queue, http.server, hashlib, re
 from datetime import datetime
@@ -54,7 +54,7 @@ SUPPORT_URL = os.getenv("SUPPORT_URL", "https://t.me/your_support")
 PRIVACY_URL = os.getenv("PRIVACY_URL", "https://telegra.ph/Politika-konfidencialnosti-11-11")
 TERMS_URL = os.getenv("TERMS_URL", "https://telegra.ph/Polzovatelskoe-soglashenie-11-11")
 CONSENT_VERSION = os.getenv("CONSENT_VERSION", "v1.0")
-BOT_USERNAME = os.getenv("BOT_USERNAME", "")
+BOT_USERNAME = os.getenv("BOT_USERNAME", "Plamenerualbot")
 
 PLATEGA_ID = os.getenv("PLATEGA_MERCHANT_ID", "")
 PLATEGA_SECRET = os.getenv("PLATEGA_SECRET_KEY", "")
@@ -83,8 +83,8 @@ DB_POOL_SIZE = 16
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 API_RATE_PER_DAY = _env_int("API_RATE_PER_DAY", 200, 1)
 
-REF_BONUS_REFERRER = 20
-REF_BONUS_REFERRED = 5
+REF_BONUS_REFERRER = 3
+REF_BONUS_REFERRED = 2
 DAILY_BONUS_IMG = 3
 DAILY_BONUS_TTS = 1
 AGENT_PRICE_IMG = 10
@@ -182,6 +182,8 @@ MODELS = {
     "kimi-k3.1-pro": {"name":"🌙 Kimi K3.1 Pro", "type":"text", "price":3, "provider":"clodex"},
     "claude-fable-5.2": {"name":"🔥 Claude Fable 5.2", "type":"text", "price":5, "provider":"clodex"},
     "deepseek-v4.1-flash": {"name":"🔬 DeepSeek V4.1", "type":"text", "price":1, "provider":"clodex"},
+    "gpt-6.1-terra": {"name":"🌍 Terra 6.1", "type":"text", "price":4, "provider":"clodex"},
+    "gpt-6.1-sol-fast": {"name":"⚡ Sol Fast 6.1", "type":"text", "price":10, "provider":"clodex"},
     "nvidia/nemotron-3-ultra-550b-a55b:free": {"name":"🆓 Nemotron 3 Ultra", "type":"text", "price":0, "provider":"openrouter"},
 }
 
@@ -247,7 +249,7 @@ ALLOWED_COLS = {
     "balance_edit","balance_anim","balance_up","text_free_used","sub_plan","sub_until","sub_used",
     "sub_tokens_used","state","temp_model_id","temp_price","admin_state","admin_target","admin_ts",
     "free_image","onboarded","last_seen","created_at","consent_at","consent_version","api_day","api_calls",
-    "referred_by","ref_count","daily_last","daily_streak","tasks_done"
+    "referred_by","ref_count","daily_last","daily_streak","tasks_done","custom_key","custom_model"
 }
 
 # ==========================================================
@@ -304,7 +306,7 @@ def init_db():
             consent_version TEXT DEFAULT '', api_day TEXT DEFAULT '', api_calls INTEGER DEFAULT 0,
             referred_by INTEGER DEFAULT 0, ref_count INTEGER DEFAULT 0,
             daily_last TEXT DEFAULT '', daily_streak INTEGER DEFAULT 0,
-            tasks_done TEXT DEFAULT '')''')
+            tasks_done TEXT DEFAULT '', custom_key TEXT DEFAULT '', custom_model TEXT DEFAULT '')''')
         
         # 🆕 ЖЕСТКИЙ ФИКС: удаляем старую таблицу api_keys
         cur.execute("DROP TABLE IF EXISTS api_keys")
@@ -330,6 +332,7 @@ def init_db():
             ("sub_until","REAL DEFAULT 0"),("sub_used","INTEGER DEFAULT 0"), ("sub_tokens_used","INTEGER DEFAULT 0"),
             ("referred_by","INTEGER DEFAULT 0"),("ref_count","INTEGER DEFAULT 0"), ("daily_last","TEXT DEFAULT ''"),
             ("daily_streak","INTEGER DEFAULT 0"), ("tasks_done","TEXT DEFAULT ''"),
+            ("custom_key","TEXT DEFAULT ''"), ("custom_model","TEXT DEFAULT ''"),
         ])
 
 # ==========================================================
@@ -413,7 +416,6 @@ def get_history(uid, limit=MAX_HISTORY):
         rows = cur.fetchall()
     return [{"role": r, "content": c} for r, c in reversed(rows)]
 
-# 🆕 ФУНКЦИЯ ОБНОВЛЕНИЯ ФАЙЛА
 def update_bot_file(new_content: str) -> str:
     try:
         compile(new_content, "bot.py", "exec")
@@ -519,42 +521,6 @@ def api_access_ok(uid, est=2000):
         return True, "ok"
 
 # ==========================================================
-# 🚦 АНТИФЛУД И ОТМЕНА
-# ==========================================================
-_flood = {}; _fl = threading.Lock()
-def anti_flood(uid, min_sec=2):
-    now = time.time()
-    with _fl:
-        if now - _flood.get(uid, 0) < min_sec: return False
-        _flood[uid] = now; return True
-
-_active_gens = {}
-_cancel_flags = {}
-_gen_lock = threading.Lock()
-
-def start_generation(uid):
-    with _gen_lock: _active_gens[uid] = True
-def cancel_generation(uid):
-    with _gen_lock: 
-        _active_gens[uid] = False
-        _cancel_flags[uid] = time.time()
-def is_generation_active(uid):
-    with _gen_lock: return _active_gens.get(uid, False)
-
-def mark_canceled(uid):
-    with _gen_lock: _cancel_flags[uid] = time.time()
-
-def cancel_kb():
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("❌ Отменить", callback_data="cancel_gen"))
-    return kb
-
-def input_kb():
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("⬅️ Назад в меню", callback_data="menu_main"))
-    return kb
-
-# ==========================================================
 # 🤖 AI
 # ==========================================================
 def _prov(provider):
@@ -601,7 +567,6 @@ EXP_SYSTEM_PROMPT = (
 )
 
 def gen_text(uid, mid, prompt, is_dark=False, use_history=True, max_tokens=2048):
-    start_time = time.time()
     if mid not in MODELS: return f"❌ Модель {mid} не найдена"
     p = MODELS[mid]["provider"]
     url, headers = _prov(p)
@@ -616,10 +581,6 @@ def gen_text(uid, mid, prompt, is_dark=False, use_history=True, max_tokens=2048)
     
     ok, res, code = _stream(url, headers, body)
     
-    with _gen_lock:
-        if _cancel_flags.get(uid, 0) > start_time:
-            return ""
-
     if not ok and code == 400 and "cyber" in str(res).lower() and p != "clodex":
         u2, h2 = _prov("clodex")
         ok2, res2, _ = _stream(u2, h2, {**body, "model":"deepseek-v4.1-flash"})
@@ -637,7 +598,6 @@ def gen_text(uid, mid, prompt, is_dark=False, use_history=True, max_tokens=2048)
     return res
 
 def gen_image(uid, mid, prompt):
-    start_time = time.time()
     m = MODELS[mid]
     if m["provider"] == "polza":
         url = "https://polza.ai/api/v2/images/generations"
@@ -653,10 +613,6 @@ def gen_image(uid, mid, prompt):
             if r.status_code in (429,502,503,504): time.sleep(2**i); continue
             if r.status_code != 200: return None
             d = r.json()
-            
-            with _gen_lock:
-                if _cancel_flags.get(uid, 0) > start_time: return None
-                
             return d["data"][0].get("url") if d.get("data") else None
         except Exception: time.sleep(2**i)
     return None
@@ -862,7 +818,6 @@ def _read_recent_errors(max_bytes=8000):
     except Exception: return ""
 
 def _call_clodex_fixer(user_prompt: str) -> str:
-    # Читаем код бота из файла
     try:
         with open("bot.py", "r", encoding="utf-8") as f:
             bot_code = f.read()
@@ -1094,7 +1049,6 @@ def register_handlers():
             try: ref_by = int(args[1][4:])
             except: pass
         add_user(uid, m.from_user.username or f"id{uid}", ref_by)
-        mark_canceled(uid)
         u = get_user(uid) or {}
         if not u.get("consent_at"): return show_consent(uid, ref_by)
         if not u.get("free_image") and FREE_WELCOME_IMG > 0:
@@ -1105,7 +1059,6 @@ def register_handlers():
 
     @bot.callback_query_handler(func=lambda c: c.data == "cancel_gen")
     def cb_cancel(c):
-        cancel_generation(c.from_user.id)
         upd(c.from_user.id, state="")
         bot.answer_callback_query(c.id, "❌ Действие отменено", show_alert=True)
         try: bot.delete_message(c.from_user.id, c.message.message_id)
@@ -1176,7 +1129,7 @@ def register_handlers():
     @bot.callback_query_handler(func=lambda c: c.data == "menu_refs")
     def cb_refs(c):
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
-        link = f"https://t.me/{BOT_USERNAME or 'your_bot'}?start=ref_{c.from_user.id}"
+        link = f"https://t.me/{BOT_USERNAME}?start=ref_{c.from_user.id}"
         txt = f"👥 **Рефералы** ❄️\n\n🔗 <code>{link}</code>\n\n🎁 • Тебе: +{REF_BONUS_REFERRER} 🖼\n• Другу: +{REF_BONUS_REFERRED} 🖼\n\n👥 Приглашено: {u.get('ref_count',0)}"
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("📤 Поделиться", url=f"https://t.me/share/url?url={link}&text=Попробуй! ❄️"))
@@ -1185,7 +1138,6 @@ def register_handlers():
 
     @bot.callback_query_handler(func=lambda c: c.data == "new_claude")
     def cb_fable(c):
-        if not anti_flood(c.from_user.id): return bot.answer_callback_query(c.id, "⏳")
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
         upd(c.from_user.id, state="fable_wait")
         safe_photo(c.from_user.id, IMG_TEXT, f"🔥 **Claude Fable 5.2** ❄️\n\n💰 Цена: 5₽\n🧠 Бесплатных: {u.get('text_free_used',0)}/{FREE_TEXT_LIMIT}\n\n✍️ Вопрос:", reply_markup=input_kb(), parse_mode="Markdown")
@@ -1585,7 +1537,7 @@ def register_handlers():
         text = m.text.strip(); state = u.get("state", "")
 
         if text == "/start":
-            cancel_generation(uid); upd(uid, state=""); return start(m)
+            upd(uid, state=""); return start(m)
         
         if text == "/rate": return cmd_rate(m)
         if text == "/aifix" and uid == ADMIN_ID:
@@ -1612,14 +1564,8 @@ def register_handlers():
             proposal = _call_clodex_fixer(text)
             try: bot.delete_message(uid, status_msg.message_id)
             except: pass
-            
-            # Сохраняем ответ в файл, чтобы можно было применить
-            with open("ai_response.txt", "w", encoding="utf-8") as f:
-                f.write(proposal)
-                
             kb = types.InlineKeyboardMarkup()
             kb.add(types.InlineKeyboardButton("🐙 Создать PR", callback_data="gh_pr_fix"))
-            kb.add(types.InlineKeyboardButton("📝 Применить (ответь на сообщение)", callback_data="help_apply"))
             return safe_send(uid, f"🤖 **Ответ ИИ:**\n\n{proposal[:3500]}", reply_markup=kb, parse_mode="Markdown")
 
         # 🆕 ВЫДАЧА API
@@ -1646,45 +1592,36 @@ def register_handlers():
                 return safe_send(uid, f"✅ Выдано {amount} ({field}) → {target}")
             except: return safe_send(uid, "❌ Формат: `123456 img 50`", parse_mode="Markdown")
 
-        if is_generation_active(uid):
-            cancel_generation(uid)
-            safe_send(uid, "⏹ Старая генерация отменена. Обрабатываю новое сообщение...")
-            upd(uid, state="")
-
         if state == "fable_wait":
-            if not anti_flood(uid): return safe_send(uid, "⏳")
-            upd(uid, state=""); start_generation(uid)
-            status = safe_send(uid, "❄️ Fable 5.2 думает...", reply_markup=cancel_kb())
+            upd(uid, state="")
+            status = safe_send(uid, "❄️ Fable 5.2 думает...")
             ans = gen_text(uid, "claude-fable-5.2", text)
             try: bot.delete_message(uid, status.message_id)
             except: pass
-            cancel_generation(uid)
             if ans: return safe_send(uid, ans[:4000])
 
         if state.startswith("txt_"):
             mid = state[4:]
             if mid not in MODELS: upd(uid, state=""); return safe_send(uid, "❌ Модель потеряна.")
-            upd(uid, state=""); start_generation(uid)
-            status = safe_send(uid, f"❄️ {MODELS[mid]['name']} думает...", reply_markup=cancel_kb())
+            upd(uid, state="")
+            status = safe_send(uid, f"❄️ {MODELS[mid]['name']} думает...")
             ans = gen_text(uid, mid, text)
             try: bot.delete_message(uid, status.message_id)
             except: pass
-            cancel_generation(uid)
             if ans: safe_send(uid, ans[:4000])
             check_tasks(uid)
             return
 
         if state == "agent_wait_prompt":
-            upd(uid, state=""); start_generation(uid)
+            upd(uid, state="")
             if not charge(uid, "balance_img", AGENT_PRICE_IMG): return safe_send(uid, f"❌ Нужно {AGENT_PRICE_IMG} 🖼.")
-            status = safe_send(uid, "🤖 Три модели думают... ❄️", reply_markup=cancel_kb())
+            status = safe_send(uid, "🤖 Три модели думают... ❄️")
             f1 = AGENT_EXECUTOR.submit(gen_text, uid, "gpt-6-astra", text, False, False, 1024)
             f2 = AGENT_EXECUTOR.submit(gen_text, uid, "claude-fable-5.2", text, False, False, 1024)
             f3 = AGENT_EXECUTOR.submit(gen_text, uid, "deepseek-v4.1-flash", text, True, False, 1024)
             r1, r2, r3 = f1.result(), f2.result(), f3.result()
             try: bot.delete_message(uid, status.message_id)
             except: pass
-            cancel_generation(uid)
             safe_send(uid, f"💬 **GPT-6:**\n{r1[:1000]}")
             safe_send(uid, f"🔥 **Fable:**\n{r2[:1000]}")
             safe_send(uid, f"🧪 **Экспериментальный:**\n{r3[:1000]}")
@@ -1692,25 +1629,22 @@ def register_handlers():
             return
 
         if state == "dark_wait":
-            if not anti_flood(uid): return safe_send(uid, "⏳")
-            upd(uid, state=""); start_generation(uid)
-            status = safe_send(uid, "🧪 Думаю...", reply_markup=cancel_kb())
+            upd(uid, state="")
+            status = safe_send(uid, "🧪 Думаю...")
             ans = gen_text(uid, "deepseek-v4.1-flash", text, True)
             try: bot.delete_message(uid, status.message_id)
             except: pass
-            cancel_generation(uid)
             if ans: return safe_send(uid, ans[:4000])
 
         if state == "img_wait":
             mid = u.get("temp_model_id")
             if not mid or mid not in MODELS: upd(uid, state=""); return safe_send(uid, "❌ Модель потеряна.")
             if not charge(uid, "balance_img", 1): upd(uid, state=""); return safe_send(uid, "❌ Нет картинок.")
-            upd(uid, state=""); start_generation(uid)
-            status = safe_send(uid, "🎨 Рисую... ❄️", reply_markup=cancel_kb())
+            upd(uid, state="")
+            status = safe_send(uid, "🎨 Рисую... ❄️")
             url = gen_image(uid, mid, text)
             try: bot.delete_message(uid, status.message_id)
             except: pass
-            cancel_generation(uid)
             if url:
                 with DbConn() as c: c.cursor().execute("INSERT INTO works(user_id,m_type,model_id,prompt,file_id,ts) VALUES(?,?,?,?,?,?)", (uid,"image",mid,text[:500],url,time.time()))
                 try: bot.send_photo(uid, url, caption=f"✅ {MODELS[mid]['name']} ❄️")
@@ -1725,12 +1659,11 @@ def register_handlers():
             mid = u.get("temp_model_id")
             if not mid or mid not in VIDEO_MODELS: upd(uid, state=""); return safe_send(uid, "❌ Модель потеряна.")
             if not charge(uid, "balance_vid", 1): upd(uid, state=""); return safe_send(uid, "❌ Нет видео.")
-            upd(uid, state=""); start_generation(uid)
-            status = safe_send(uid, "🎬 Рендерю видео... (1-2 мин) ❄️", reply_markup=cancel_kb())
+            upd(uid, state="")
+            status = safe_send(uid, "🎬 Рендерю видео... (1-2 мин) ❄️")
             url = gen_video(uid, mid, text)
             try: bot.delete_message(uid, status.message_id)
             except: pass
-            cancel_generation(uid)
             if url:
                 with DbConn() as c: c.cursor().execute("INSERT INTO works(user_id,m_type,model_id,prompt,file_id,ts) VALUES(?,?,?,?,?,?)", (uid,"video",mid,text[:500],url,time.time()))
                 try: bot.send_video(uid, url, caption=f"✅ {VIDEO_MODELS[mid]['name']} ❄️")
@@ -1742,12 +1675,11 @@ def register_handlers():
 
         if state == "tts_wait":
             if not charge(uid, "balance_tts", 1): upd(uid, state=""); return safe_send(uid, "❌ Нет озвучек.")
-            upd(uid, state=""); start_generation(uid)
-            status = safe_send(uid, "🔊 Озвучиваю... ❄️", reply_markup=cancel_kb())
+            upd(uid, state="")
+            status = safe_send(uid, "🔊 Озвучиваю... ❄️")
             audio = gen_tts(uid, text)
             try: bot.delete_message(uid, status.message_id)
             except: pass
-            cancel_generation(uid)
             if audio:
                 try: bot.send_voice(uid, io.BytesIO(audio), caption="✅ Готово!")
                 except: safe_send(uid, "❌ Не удалось отправить.")
@@ -1758,21 +1690,18 @@ def register_handlers():
 
         if state == "stt_wait": return safe_send(uid, "🎙 Отправь голосовое (не текст).")
 
-        if not anti_flood(uid): return safe_send(uid, "⏳")
-        start_generation(uid)
-        status = safe_send(uid, "❄️ Думаю...", reply_markup=cancel_kb())
+        # ОБЫЧНЫЙ ЧАТ
+        status = safe_send(uid, "❄️ Думаю...")
         ans = gen_text(uid, "gpt-6-astra", text)
         try: bot.delete_message(uid, status.message_id)
         except: pass
-        cancel_generation(uid)
         if ans: safe_send(uid, ans[:4000])
 
     @bot.message_handler(content_types=["voice","audio","video_note"])
     def handle_audio(m):
         uid = m.from_user.id
         if not charge(uid, "balance_stt", 1): return safe_send(uid, "❌ Нет расшифровок.")
-        start_generation(uid)
-        status = safe_send(uid, "🎙 Расшифровываю... ❄️", reply_markup=cancel_kb())
+        status = safe_send(uid, "🎙 Расшифровываю... ❄️")
         try:
             fid = m.voice.file_id if m.voice else (m.audio.file_id if m.audio else m.video_note.file_id)
             data = bot.download_file(bot.get_file(fid).file_path)
@@ -1780,13 +1709,11 @@ def register_handlers():
                               files={"file":("a.ogg",data)}, data={"model":"openai/whisper-1"}, timeout=HTTP_TIMEOUT_LONG)
             try: bot.delete_message(uid, status.message_id)
             except: pass
-            cancel_generation(uid)
             if r.status_code == 200: safe_send(uid, f"🎙 **Расшифровка:**\n\n{r.json().get('text','')[:4000]}")
             else:
                 if not is_admin(uid): add_balance(uid, "balance_stt", 1)
                 safe_send(uid, "❌ Ошибка. Баланс возвращён.")
         except Exception as e:
-            cancel_generation(uid)
             if not is_admin(uid): add_balance(uid, "balance_stt", 1)
             safe_send(uid, f"❌ {e}")
 
@@ -1817,60 +1744,8 @@ def main():
     threading.Thread(target=payment_poller, daemon=True).start()
     threading.Thread(target=ai_fixer_worker, daemon=True).start()
     threading.Thread(target=safe_polling, daemon=True).start()
-    log.info("❄️ Neuro Studio v85 started ❄️")
+    log.info("❄️ Neuro Studio v88 started ❄️")
     while not SHUTDOWN.is_set(): time.sleep(1)
 
 if __name__ == "__main__":
     main()
-
-
-# 🆕 AI Fix (2026-11-12T16:26:02.571862):
-# def generate_api_key(uid, days=30):
-    raw = f"sk_v73_{uuid.uuid4().hex[:16]}"
-    key_hash = _hash_key(raw)
-    now = time.time()
-    expires_at = now + days * 86400
-
-    with DbConn() as c:
-        cur = c.cursor()
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS api_keys (
-                key_hash TEXT PRIMARY KEY,
-                user_id INTEGER,
-                created_at REAL,
-                expires_at REAL
-            )
-        """)
-
-        cur.execute("PRAGMA table_info(api_keys)")
-        existing_columns = {row[1] for row in cur.fetchall()}
-
-        required_columns = {
-            "key_hash": "TEXT",
-            "user_id": "INTEGER",
-            "created_at": "REAL",
-            "expires_at": "REAL",
-        }
-
-        for column, column_type in required_columns.items():
-            if column not in existing_columns:
-                try:
-                    cur.execute(
-                        f"ALTER TABLE api_keys ADD COLUMN {column} {column_type}"
-                    )
-                except sqlite3.OperationalError:
-                    cur.execute("PRAGMA table_info(api_keys)")
-                    existing_columns = {row[1] for row in cur.fetchall()}
-                    if column not in existing_columns:
-                        raise
-
-        cur.execute(
-            """
-            INSERT INTO api_keys(key_hash, user_id, created_at, expires_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            (key_hash, uid, now, expires_at),
-        )
-
-    return raw
