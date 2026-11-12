@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-❄️ Нейро-Студия v75 — Winter Edition ❄️
-🌟 Исправлены таймауты Telegram, добавлены ретраи 502, исправлено создание PR.
+❄️ Нейро-Студия v78 — Winter Edition ❄️
+🌟 Убран краш при спаме, добавлена блокировка ввода, исправлена личность ИИ.
 """
 import os, sys, io, time, uuid, sqlite3, logging, threading, signal, json, queue, http.server, hashlib
 from datetime import datetime
@@ -92,7 +92,7 @@ AGENT_PRICE_IMG = 10
 FREE_WELCOME_IMG = 1
 PAYMENT_POLL_SEC = 5
 SHOW_DARK_IN_MENU = False
-MENU_MAIN_COLS = 1 # Одноколоночное меню
+MENU_MAIN_COLS = 1
 PROMPT_SELLER_SHARE = 0.70
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
@@ -101,7 +101,7 @@ GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
 GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "bot.py")
 AI_FIXER_ENABLED = _env_int("AI_FIXER_ENABLED", 1)
 AI_FIXER_LOG_PATH = os.getenv("AI_FIXER_LOG_PATH", os.path.join(DATA_DIR, "bot_errors.log"))
-AI_FIXER_COOLDOWN = _env_int("AI_FIXER_COOLDOWN", 300)
+AI_FIXER_COOLDOWN = _env_int("AI_FIXER_COOLDOWN", 900)
 
 def _setup_error_log():
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -502,7 +502,7 @@ def api_access_ok(uid, est=2000):
         return True, "ok"
 
 # ==========================================================
-# 🚦 АНТИФЛУД И ОТМЕНА
+# 🚦 АНТИФЛУД И БЛОКИРОВКА ВВОДА
 # ==========================================================
 _flood = {}; _fl = threading.Lock()
 def anti_flood(uid, min_sec=2):
@@ -520,11 +520,6 @@ def cancel_generation(uid):
     with _gen_lock: _active_gens[uid] = False
 def is_generation_active(uid):
     with _gen_lock: return _active_gens.get(uid, False)
-
-def cancel_kb():
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("❌ Отменить", callback_data="cancel_gen"))
-    return kb
 
 def input_kb():
     kb = types.InlineKeyboardMarkup()
@@ -582,6 +577,9 @@ def gen_text(uid, mid, prompt, is_dark=False, use_history=True, max_tokens=2048)
     url, headers = _prov(p)
     msgs = []
     if is_dark: msgs.append({"role": "system", "content": DARK_SYSTEM_PROMPT})
+    elif mid == "nvidia/nemotron-3-ultra-550b-a55b:free":
+        msgs.append({"role": "system", "content": "Ты — искусственный интеллект Нейро. Отвечай от своего лица. Никогда не говори, что ты ChatGPT или модель от OpenAI. Ты работаешь в Нейро-Студии."})
+    
     if use_history and not is_dark: msgs.extend(get_history(uid))
     msgs.append({"role":"user","content":prompt})
     body = {"model": mid, "messages": msgs, "stream": True, "max_tokens": max_tokens}
@@ -838,7 +836,6 @@ def create_github_pr(fix_text: str) -> str:
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
     base = f"https://api.github.com/repos/{GITHUB_REPO}"
     
-    # 1. Ищем существующую ветку (main или master)
     target_branch = GITHUB_BRANCH
     r = requests.get(f"{base}/git/ref/heads/{target_branch}", headers=headers)
     if r.status_code != 200:
@@ -1030,15 +1027,6 @@ def register_handlers():
             safe_send(uid, f"🎁 Подарок: **+{FREE_WELCOME_IMG} картинка**!\nПлюс {FREE_TEXT_LIMIT} бесплатных вопроса.\n\nПопробуй сейчас ❄️", parse_mode="Markdown")
         upd(uid, state="", last_seen=time.time())
         show_main_menu(uid)
-
-    @bot.callback_query_handler(func=lambda c: c.data == "cancel_gen")
-    def cb_cancel(c):
-        cancel_generation(c.from_user.id)
-        upd(c.from_user.id, state="")
-        bot.answer_callback_query(c.id, "❌ Действие отменено", show_alert=True)
-        try: bot.delete_message(c.from_user.id, c.message.message_id)
-        except: pass
-        show_main_menu(c.from_user.id)
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("consent_yes"))
     def cb_consent(c):
@@ -1501,10 +1489,14 @@ def register_handlers():
                 return safe_send(uid, f"✅ Выдано {amount} ({field}) → {target}")
             except: return safe_send(uid, "❌ Формат: `123456 img 50`", parse_mode="Markdown")
 
+        # --- Блокировка ввода во время генерации ---
+        if is_generation_active(uid):
+            return safe_send(uid, "⏳ Бот занят. Пожалуйста, подождите.")
+
         if state == "fable_wait":
             if not anti_flood(uid): return safe_send(uid, "⏳")
             upd(uid, state=""); start_generation(uid)
-            status = safe_send(uid, "❄️ Fable 5.2 думает...", reply_markup=cancel_kb())
+            status = safe_send(uid, "❄️ Fable 5.2 думает...")
             ans = gen_text(uid, "claude-fable-5.2", text)
             try: bot.delete_message(uid, status.message_id)
             except: pass
@@ -1515,7 +1507,7 @@ def register_handlers():
             mid = state[4:]
             if mid not in MODELS: upd(uid, state=""); return safe_send(uid, "❌ Модель потеряна.")
             upd(uid, state=""); start_generation(uid)
-            status = safe_send(uid, f"❄️ {MODELS[mid]['name']} думает...", reply_markup=cancel_kb())
+            status = safe_send(uid, f"❄️ {MODELS[mid]['name']} думает...")
             ans = gen_text(uid, mid, text)
             try: bot.delete_message(uid, status.message_id)
             except: pass
@@ -1527,7 +1519,7 @@ def register_handlers():
         if state == "agent_wait_prompt":
             upd(uid, state=""); start_generation(uid)
             if not charge(uid, "balance_img", AGENT_PRICE_IMG): return safe_send(uid, f"❌ Нужно {AGENT_PRICE_IMG} 🖼.")
-            status = safe_send(uid, "🤖 Три модели думают... ❄️", reply_markup=cancel_kb())
+            status = safe_send(uid, "🤖 Три модели думают... ❄️")
             f1 = AGENT_EXECUTOR.submit(gen_text, uid, "gpt-6-astra", text, False, False, 1024)
             f2 = AGENT_EXECUTOR.submit(gen_text, uid, "claude-fable-5.2", text, False, False, 1024)
             f3 = AGENT_EXECUTOR.submit(gen_text, uid, "deepseek-v4.1-flash", text, True, False, 1024)
@@ -1544,7 +1536,7 @@ def register_handlers():
         if state == "dark_wait":
             if not anti_flood(uid): return safe_send(uid, "⏳")
             upd(uid, state=""); start_generation(uid)
-            status = safe_send(uid, "🧪 Думаю...", reply_markup=cancel_kb())
+            status = safe_send(uid, "🧪 Думаю...")
             ans = gen_text(uid, "deepseek-v4.1-flash", text, True)
             try: bot.delete_message(uid, status.message_id)
             except: pass
@@ -1556,7 +1548,7 @@ def register_handlers():
             if not mid or mid not in MODELS: upd(uid, state=""); return safe_send(uid, "❌ Модель потеряна.")
             if not charge(uid, "balance_img", 1): upd(uid, state=""); return safe_send(uid, "❌ Нет картинок.")
             upd(uid, state=""); start_generation(uid)
-            status = safe_send(uid, "🎨 Рисую... ❄️", reply_markup=cancel_kb())
+            status = safe_send(uid, "🎨 Рисую... ❄️")
             url = gen_image(uid, mid, text)
             try: bot.delete_message(uid, status.message_id)
             except: pass
@@ -1576,7 +1568,7 @@ def register_handlers():
             if not mid or mid not in VIDEO_MODELS: upd(uid, state=""); return safe_send(uid, "❌ Модель потеряна.")
             if not charge(uid, "balance_vid", 1): upd(uid, state=""); return safe_send(uid, "❌ Нет видео.")
             upd(uid, state=""); start_generation(uid)
-            status = safe_send(uid, "🎬 Рендерю видео... (1-2 мин) ❄️", reply_markup=cancel_kb())
+            status = safe_send(uid, "🎬 Рендерю видео... (1-2 мин) ❄️")
             url = gen_video(uid, mid, text)
             try: bot.delete_message(uid, status.message_id)
             except: pass
@@ -1593,7 +1585,7 @@ def register_handlers():
         if state == "tts_wait":
             if not charge(uid, "balance_tts", 1): upd(uid, state=""); return safe_send(uid, "❌ Нет озвучек.")
             upd(uid, state=""); start_generation(uid)
-            status = safe_send(uid, "🔊 Озвучиваю... ❄️", reply_markup=cancel_kb())
+            status = safe_send(uid, "🔊 Озвучиваю... ❄️")
             audio = gen_tts(uid, text)
             try: bot.delete_message(uid, status.message_id)
             except: pass
@@ -1610,7 +1602,7 @@ def register_handlers():
 
         if not anti_flood(uid): return safe_send(uid, "⏳")
         start_generation(uid)
-        status = safe_send(uid, "❄️ Думаю...", reply_markup=cancel_kb())
+        status = safe_send(uid, "❄️ Думаю...")
         ans = gen_text(uid, "gpt-6-astra", text)
         try: bot.delete_message(uid, status.message_id)
         except: pass
@@ -1622,7 +1614,7 @@ def register_handlers():
         uid = m.from_user.id
         if not charge(uid, "balance_stt", 1): return safe_send(uid, "❌ Нет расшифровок.")
         start_generation(uid)
-        status = safe_send(uid, "🎙 Расшифровываю... ❄️", reply_markup=cancel_kb())
+        status = safe_send(uid, "🎙 Расшифровываю... ❄️")
         try:
             fid = m.voice.file_id if m.voice else (m.audio.file_id if m.audio else m.video_note.file_id)
             data = bot.download_file(bot.get_file(fid).file_path)
@@ -1644,10 +1636,13 @@ def register_handlers():
 # 🚀 MAIN
 # ==========================================================
 def safe_polling():
+    backoff = 1.0
     while not SHUTDOWN.is_set():
         try: bot.infinity_polling(timeout=20, long_polling_timeout=45, interval=1)
         except Exception as e:
-            log.error(f"Polling crashed: {e}. Restart in 5s..."); time.sleep(5)
+            log.error(f"Polling crashed: {e}. Restart in {backoff}s...")
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60.0)
 
 def main():
     global bot
@@ -1664,7 +1659,7 @@ def main():
     threading.Thread(target=payment_poller, daemon=True).start()
     threading.Thread(target=ai_fixer_worker, daemon=True).start()
     threading.Thread(target=safe_polling, daemon=True).start()
-    log.info("❄️ Neuro Studio v75 started ❄️")
+    log.info("❄️ Neuro Studio v78 started ❄️")
     while not SHUTDOWN.is_set(): time.sleep(1)
 
 if __name__ == "__main__":
