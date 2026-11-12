@@ -1822,3 +1822,55 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# 🆕 AI Fix (2026-11-12T16:26:02.571862):
+# def generate_api_key(uid, days=30):
+    raw = f"sk_v73_{uuid.uuid4().hex[:16]}"
+    key_hash = _hash_key(raw)
+    now = time.time()
+    expires_at = now + days * 86400
+
+    with DbConn() as c:
+        cur = c.cursor()
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS api_keys (
+                key_hash TEXT PRIMARY KEY,
+                user_id INTEGER,
+                created_at REAL,
+                expires_at REAL
+            )
+        """)
+
+        cur.execute("PRAGMA table_info(api_keys)")
+        existing_columns = {row[1] for row in cur.fetchall()}
+
+        required_columns = {
+            "key_hash": "TEXT",
+            "user_id": "INTEGER",
+            "created_at": "REAL",
+            "expires_at": "REAL",
+        }
+
+        for column, column_type in required_columns.items():
+            if column not in existing_columns:
+                try:
+                    cur.execute(
+                        f"ALTER TABLE api_keys ADD COLUMN {column} {column_type}"
+                    )
+                except sqlite3.OperationalError:
+                    cur.execute("PRAGMA table_info(api_keys)")
+                    existing_columns = {row[1] for row in cur.fetchall()}
+                    if column not in existing_columns:
+                        raise
+
+        cur.execute(
+            """
+            INSERT INTO api_keys(key_hash, user_id, created_at, expires_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (key_hash, uid, now, expires_at),
+        )
+
+    return raw
