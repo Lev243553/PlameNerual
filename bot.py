@@ -11,7 +11,9 @@ import telebot
 from telebot import types
 from telebot.apihelper import ApiTelegramException
 import requests
-
+import telebot
+from telebot import types
+from telebot.apihelper import ApiTelegramException
 # Принудительная кодировка UTF-8
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
@@ -1390,6 +1392,7 @@ def register_handlers():
         proposal = _call_clodex_fixer(log_text)
         res = create_github_pr(proposal)
         safe_send(c.from_user.id, res)
+    
 
     @bot.callback_query_handler(func=lambda c: c.data == "admin_root")
     def cb_admin(c):
@@ -1401,8 +1404,15 @@ def register_handlers():
         kb = types.InlineKeyboardMarkup(row_width=2)
         kb.add(types.InlineKeyboardButton("👥 Юзеры", callback_data="admin_users"), types.InlineKeyboardButton("💳 Платежи", callback_data="admin_payments"))
         kb.add(types.InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"), types.InlineKeyboardButton("🎁 Выдать", callback_data="admin_give_menu"))
+        kb.add(types.InlineKeyboardButton("🤖 Чат с DeepSeek", callback_data="admin_ai_chat"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_more"))
         safe_photo(c.from_user.id, IMG_MAIN, f"🛡 **Админ-панель** ❄️\n\n👥 Юзеров: {total}\n💳 Платежей: {row[0]} на {row[1]}₽", reply_markup=kb, parse_mode="Markdown")
+    @bot.callback_query_handler(func=lambda c: c.data == "admin_ai_chat")
+    def cb_ai_chat(c):
+        if c.from_user.id != ADMIN_ID: return
+        bot.answer_callback_query(c.id)
+        upd(c.from_user.id, state="admin_ai_chat_wait")
+        safe_send(c.from_user.id, "🤖 **Чат с DeepSeek** ❄️\n\nОтправь текст ошибки, и он предложит фикс.", parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data == "admin_users")
     def cb_au(c):
