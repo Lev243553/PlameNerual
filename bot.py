@@ -1719,3 +1719,72 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# 🆕 AI Fix (2026-11-12T13:22:40.330280):
+# Причина — переменные `u` и `state` инициализируются не на всех путях выполнения `handle_text()`. При этом они используются до гарантированного присваивания:
+
+```python
+text = m.text.strip()
+state = u.get("state", "")
+```
+
+Для сообщения от пользователя, у которого ветка с инициализацией `u` не выполняется, Python считает `u` локальной переменной, но она ещё не имеет значения. После исправления `u` возникает аналогичная проблема со `state`.
+
+Нужно получить пользователя и его состояние в начале обработчика, до любых проверок состояния или `ADMIN_ID`. Например, если хранилище пользователей — `users`, а ключом является `uid`:
+
+```diff
+diff --git a/bot.py b/bot.py
+--- a/bot.py
++++ b/bot.py
+@@ -1478,6 +1478,12 @@
+ def handle_text(m):
+     uid = m.from_user.id
++
++    # Инициализируем контекст до всех ветвлений.
++    # Используйте здесь фактическое хранилище пользователей проекта.
++    u = users.setdefault(uid, {})
++    state = u.get("state", "")
++
+     text = m.text.strip()
+-    state = u.get("state", "")
+ 
+     if state == "admin_ai_chat_wait" and uid == ADMIN_ID:
+         ...
+```
+
+Если в проекте пользователи хранятся по строковому ключу, патч должен быть таким:
+
+```diff
+diff --git a/bot.py b/bot.py
+--- a/bot.py
++++ b/bot.py
+@@ -1478,8 +1478,13 @@
+ def handle_text(m):
+     uid = m.from_user.id
++    user_key = str(uid)
++    u = users.setdefault(user_key, {})
++    state = u.get("state", "")
+ 
+-    text = m.text.strip()
+-    state = u.get("state", "")
++    text = (m.text or "").strip()
+ 
+     if state == "admin_ai_chat_wait" and uid == ADMIN_ID:
+         ...
+```
+
+Важно удалить или перенести ниже существующее присваивание `u`, чтобы не было двух разных источников состояния. Например, если сейчас в функции есть:
+
+```python
+if uid != ADMIN_ID:
+    u = users.setdefault(str(uid), {})
+```
+
+его нужно заменить на безусловную инициализацию в начале:
+
+```diff
+-    if uid != ADMIN_ID:
+-        u = users.setdefault(str(uid), {})
++    u = users.setdefault(str(uid), {})
++    state = u.get(
