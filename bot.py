@@ -851,7 +851,7 @@ def _call_clodex_fixer(log_text: str) -> str:
     prompt = f"Ты senior Python. Найди баг и предложи патч (unified diff).\n\nЛог:\n{log_text[-6000:]}"
     try:
         url, headers = _prov("clodex")
-        body = {"model": "claude-opus-5.5", "messages": [{"role": "user", "content": prompt}], "stream": False}
+        body = {"model": "gpt-6.1-terra", "messages": [{"role": "user", "content": prompt}], "stream": False}
         r = requests.post(url, headers=headers, json=body, timeout=HTTP_TIMEOUT_LONG)
         if r.status_code == 200: return r.json()["choices"][0]["message"]["content"]
         return f"❌ Ошибка Clodex: {r.text[:200]}"
@@ -1448,7 +1448,7 @@ def register_handlers():
         if c.from_user.id != ADMIN_ID: return
         bot.answer_callback_query(c.id)
         upd(c.from_user.id, state="admin_ai_chat_wait")
-        safe_send(c.from_user.id, "👑 **ИИ-Инженер (Claude Opus 5.5)** ❄️\n\nОтправь текст ошибки. Я передам его ИИ, и он предложит фикс.\n\n(Чтобы выйти, напиши /start)", parse_mode="Markdown")
+        safe_send(c.from_user.id, "👑 **ИИ-Инженер **🤖 terra-6.1** ❄️\n\nОтправь текст ошибки. Я передам его ИИ, и он предложит фикс.\n\n(Чтобы выйти, напиши /start)", parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data == "admin_users")
     def cb_au(c):
@@ -1496,10 +1496,11 @@ def register_handlers():
 
     @bot.message_handler(content_types=["text"])
     def handle_text(m):
-        uid = m.from_user.id
-        if not m.text: return
-        u = get_user(uid) or {}
-        if u.get("is_banned"): return safe_send(uid, "⛔ Вы забанены.")
+        if state == "admin_ai_chat_wait" and uid == ADMIN_ID:
+            uid = m.from_user.id
+            if not m.text: return
+            u = get_user(uid) or {}
+            if u.get("is_banned"): return safe_send(uid, "⛔ Вы забанены.")
         
         text = m.text.strip(); state = u.get("state", "")
 
@@ -1534,7 +1535,7 @@ def register_handlers():
 
         # 🆕 ОБЩЕНИЕ С ИИ-ИНЖЕНЕРОМ
         if state == "admin_ai_chat_wait" and uid == ADMIN_ID:
-            safe_send(uid, "👑 Claude Opus 5.5 думает...")
+            safe_send(uid, "🤖 Gpt Terra 6.1 думает...")
             proposal = _call_clodex_fixer(text)
             kb = types.InlineKeyboardMarkup()
             kb.add(types.InlineKeyboardButton("🐙 Создать PR", callback_data="gh_pr_fix"))
