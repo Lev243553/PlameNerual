@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-❄️ Нейро-Студия v73.2 — Winter Edition ❄️
-🌟 Исправлен UnboundLocalError, починена кодировка, добавлена отмена генераций.
+❄️ Нейро-Студия v75 — Winter Edition ❄️
+🌟 Исправлены таймауты Telegram, добавлены ретраи 502, исправлено создание PR.
 """
 import os, sys, io, time, uuid, sqlite3, logging, threading, signal, json, queue, http.server, hashlib
 from datetime import datetime
@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 import telebot
 from telebot import types
+from telebot.apihelper import ApiTelegramException
 import requests
 
 # Принудительная кодировка UTF-8
@@ -91,7 +92,7 @@ AGENT_PRICE_IMG = 10
 FREE_WELCOME_IMG = 1
 PAYMENT_POLL_SEC = 5
 SHOW_DARK_IN_MENU = False
-MENU_MAIN_COLS = 2
+MENU_MAIN_COLS = 1 # Одноколоночное меню
 PROMPT_SELLER_SHARE = 0.70
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
@@ -121,7 +122,7 @@ TASKS = {
 bot = None
 SHUTDOWN = threading.Event()
 HTTP_TIMEOUT_MED = (5, 90)
-HTTP_TIMEOUT_LONG = (5, 90)
+HTTP_TIMEOUT_LONG = (5, 180)
 AGENT_EXECUTOR = ThreadPoolExecutor(max_workers=8)
 
 def rub_to_stars(rub: int) -> int:
@@ -180,7 +181,7 @@ MODELS = {
     "kimi-k3.1-pro": {"name":"🌙 Kimi K3.1 Pro", "type":"text", "price":3, "provider":"clodex"},
     "claude-fable-5.2": {"name":"🔥 Claude Fable 5.2", "type":"text", "price":5, "provider":"clodex"},
     "deepseek-v4.1-flash": {"name":"🧪 Экспериментальный", "type":"dark_gpt", "price":1, "provider":"clodex"},
-    "nvidia/nemotron-3-ultra-550b-a55b:free": {"name":"🌌 Nemotron 3 Ultra", "type":"text", "price":0, "provider":"openrouter"},
+    "nvidia/nemotron-3-ultra-550b-a55b:free": {"name":"🆓 Nemotron 3 Ultra", "type":"text", "price":0, "provider":"openrouter"},
 }
 
 VIDEO_MODELS = {
@@ -231,6 +232,7 @@ MODEL_HINTS = {
     "claude-opus-5": "🎭 Глубокие рассуждения.",
     "kimi-k3.1-pro": "🌙 С документами.",
     "claude-fable-5.2": "🔥 Самая умная.",
+    "nvidia/nemotron-3-ultra-550b-a55b:free": "🆓 Бесплатно.",
 }
 
 VIDEO_HINTS = {
@@ -364,16 +366,32 @@ def sub_balance(uid, field, amount=1):
         return True
 
 def safe_send(uid, text, **kw):
-    try: return bot.send_message(uid, text, **kw)
-    except Exception: return None
+    for i in range(3):
+        try: return bot.send_message(uid, text, **kw)
+        except ApiTelegramException as e:
+            if e.error_code in (429, 502, 503, 504):
+                time.sleep(2 ** i)
+                continue
+            return None
+        except requests.exceptions.RequestException:
+            time.sleep(2 ** i)
+            continue
+        except Exception:
+            return None
+    return None
 
 def safe_photo(uid, photo, caption=None, **kw):
-    try: return bot.send_photo(uid, photo, caption=caption, **kw)
-    except Exception:
-        if caption:
-            try: return bot.send_message(uid, caption, **kw)
-            except Exception: return None
-        return None
+    for i in range(3):
+        try: return bot.send_photo(uid, photo, caption=caption, **kw)
+        except Exception as e:
+            if "502" in str(e) or "504" in str(e) or "ReadTimeout" in str(e) or "Connection" in str(e):
+                time.sleep(2 ** i)
+                continue
+            if caption:
+                try: return bot.send_message(uid, caption, **kw)
+                except Exception: return None
+            return None
+    return None
 
 def log_ev(uid, action, details=""):
     with DbConn() as c:
@@ -484,7 +502,7 @@ def api_access_ok(uid, est=2000):
         return True, "ok"
 
 # ==========================================================
-# 🚦 АНТИФЛУД И ОТМЕНА ГЕНЕРАЦИЙ
+# 🚦 АНТИФЛУД И ОТМЕНА
 # ==========================================================
 _flood = {}; _fl = threading.Lock()
 def anti_flood(uid, min_sec=2):
@@ -493,25 +511,24 @@ def anti_flood(uid, min_sec=2):
         if now - _flood.get(uid, 0) < min_sec: return False
         _flood[uid] = now; return True
 
-# Словарь активных генераций: {uid: True}
 _active_gens = {}
 _gen_lock = threading.Lock()
 
 def start_generation(uid):
-    with _gen_lock:
-        _active_gens[uid] = True
-
+    with _gen_lock: _active_gens[uid] = True
 def cancel_generation(uid):
-    with _gen_lock:
-        _active_gens[uid] = False
-
+    with _gen_lock: _active_gens[uid] = False
 def is_generation_active(uid):
-    with _gen_lock:
-        return _active_gens.get(uid, False)
+    with _gen_lock: return _active_gens.get(uid, False)
 
 def cancel_kb():
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton("❌ Отменить", callback_data="cancel_gen"))
+    return kb
+
+def input_kb():
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("⬅️ Назад в меню", callback_data="menu_main"))
     return kb
 
 # ==========================================================
@@ -528,7 +545,7 @@ def _stream(url, headers, body, attempts=3):
     last = None
     for i in range(attempts):
         try:
-            r = requests.post(url, headers=headers, json=body, timeout=(15, 600), stream=True)
+            r = requests.post(url, headers=headers, json=body, timeout=(15, HTTP_TIMEOUT_LONG[1]), stream=True)
             r.encoding = 'utf-8'
             if r.status_code in (429,502,503,504): last = r.status_code; time.sleep(2**i); continue
             if r.status_code != 200: return False, r.text[:300], r.status_code
@@ -821,14 +838,19 @@ def create_github_pr(fix_text: str) -> str:
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
     base = f"https://api.github.com/repos/{GITHUB_REPO}"
     
-    r = requests.get(f"{base}/git/ref/heads/{GITHUB_BRANCH}", headers=headers)
-    if r.status_code != 200: return "❌ Ветка не найдена."
-    base_sha = r.json()["object"]["sha"]
+    # 1. Ищем существующую ветку (main или master)
+    target_branch = GITHUB_BRANCH
+    r = requests.get(f"{base}/git/ref/heads/{target_branch}", headers=headers)
+    if r.status_code != 200:
+        target_branch = "master" if GITHUB_BRANCH == "main" else "main"
+        r = requests.get(f"{base}/git/ref/heads/{target_branch}", headers=headers)
+        if r.status_code != 200: return f"❌ Ветки {GITHUB_BRANCH} или master/main нет."
     
+    base_sha = r.json()["object"]["sha"]
     new_branch = f"ai-fix-{int(time.time())}"
     requests.post(f"{base}/git/refs", headers=headers, json={"ref": f"refs/heads/{new_branch}", "sha": base_sha})
     
-    r = requests.get(f"{base}/contents/{GITHUB_FILE_PATH}?ref={GITHUB_BRANCH}", headers=headers)
+    r = requests.get(f"{base}/contents/{GITHUB_FILE_PATH}?ref={target_branch}", headers=headers)
     if r.status_code != 200: return "❌ Файл не найден."
     import base64
     content = base64.b64decode(r.json()["content"]).decode("utf-8")
@@ -840,7 +862,7 @@ def create_github_pr(fix_text: str) -> str:
     })
     
     r = requests.post(f"{base}/pulls", headers=headers, json={
-        "title": "🤖 AI Fix Proposal", "head": new_branch, "base": GITHUB_BRANCH, "body": f"От ИИ:\n\n```text\n{fix_text[:3000]}\n```"
+        "title": "🤖 AI Fix Proposal", "head": new_branch, "base": target_branch, "body": f"От ИИ:\n\n```text\n{fix_text[:3000]}\n```"
     })
     return f"✅ PR создан: {r.json()['html_url']}" if r.status_code == 201 else f"❌ PR ошибка: {r.text[:200]}"
 
@@ -906,16 +928,22 @@ def payment_choice_kb(payload, rub_price):
 
 def show_main_menu(uid):
     kb = types.InlineKeyboardMarkup(row_width=MENU_MAIN_COLS)
-    kb.add(types.InlineKeyboardButton("🖼 Картинки", callback_data="menu_images"), types.InlineKeyboardButton("💬 Текст / ИИ", callback_data="menu_text"))
-    kb.add(types.InlineKeyboardButton("🎬 Видео", callback_data="menu_video"), types.InlineKeyboardButton("🎙 Аудио", callback_data="cat_audio"))
-    kb.add(types.InlineKeyboardButton("💠 Баланс", callback_data="menu_balance"), types.InlineKeyboardButton("💳 Пополнить", callback_data="menu_topup"))
-    kb.add(types.InlineKeyboardButton("📚 Подписки", callback_data="menu_subs"), types.InlineKeyboardButton("⚙️ Ещё", callback_data="menu_more"))
-    kb.add(types.InlineKeyboardButton("📸 Примеры", callback_data="menu_examples"), types.InlineKeyboardButton("🆘 Помощь", callback_data="menu_help"))
+    kb.add(types.InlineKeyboardButton("🖼 Картинки", callback_data="menu_images"))
+    kb.add(types.InlineKeyboardButton("💬 Текст / ИИ", callback_data="menu_text"))
+    kb.add(types.InlineKeyboardButton("🎬 Видео", callback_data="menu_video"))
+    kb.add(types.InlineKeyboardButton("🎙 Аудио", callback_data="cat_audio"))
+    kb.add(types.InlineKeyboardButton("💠 Баланс", callback_data="menu_balance"))
+    kb.add(types.InlineKeyboardButton("💳 Пополнить", callback_data="menu_topup"))
+    kb.add(types.InlineKeyboardButton("📚 Подписки", callback_data="menu_subs"))
+    kb.add(types.InlineKeyboardButton("⚙️ Ещё", callback_data="menu_more"))
+    kb.add(types.InlineKeyboardButton("📸 Примеры", callback_data="menu_examples"))
+    kb.add(types.InlineKeyboardButton("🆘 Помощь", callback_data="menu_help"))
     safe_photo(uid, IMG_MAIN, "❄️ **Нейро-Студия** ❄️\n\nГенерируй картинки, тексты, видео и озвучку — прямо в Telegram.\n\n🖼 Картинка от **5₽**\n💬 Вопрос к ИИ от **3₽**\n🎬 Видео от **60₽**\n\n🎁 **Бесплатно:** 1 картинка + 2 вопроса\n\nВыбери раздел 👇", reply_markup=kb, parse_mode="Markdown")
 
 def show_text_menu(uid):
     u = get_user(uid) or {}
     kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton("🆓 Nemotron 3 Ultra (Бесплатно)", callback_data="txt_free"))
     kb.add(types.InlineKeyboardButton("🔥 Claude Fable 5.2 — 5₽", callback_data="new_claude"))
     kb.add(types.InlineKeyboardButton("🌟 GPT-6 Astra — 3₽", callback_data="txt_gpt6"))
     kb.add(types.InlineKeyboardButton("🎭 Claude Opus 5 — 3₽", callback_data="txt_opus5"))
@@ -937,11 +965,15 @@ def show_audio_menu(uid):
 def show_more_menu(uid):
     u = get_user(uid) or {}
     kb = types.InlineKeyboardMarkup(row_width=MENU_MAIN_COLS)
-    kb.add(types.InlineKeyboardButton("🎁 Ежедневка", callback_data="daily_bonus"), types.InlineKeyboardButton("🏆 Задания", callback_data="menu_tasks"))
+    kb.add(types.InlineKeyboardButton("🎁 Ежедневка", callback_data="daily_bonus"))
+    kb.add(types.InlineKeyboardButton("🏆 Задания", callback_data="menu_tasks"))
     kb.add(types.InlineKeyboardButton("👥 Рефералы", callback_data="menu_refs"))
-    kb.add(types.InlineKeyboardButton("🤖 Агенты", callback_data="menu_agents"), types.InlineKeyboardButton("🧠 Память", callback_data="menu_memory"))
-    kb.add(types.InlineKeyboardButton("🛒 Маркет", callback_data="menu_market"), types.InlineKeyboardButton("📜 История", callback_data="menu_history"))
-    kb.add(types.InlineKeyboardButton("🔑 API", callback_data="menu_api"), types.InlineKeyboardButton("💱 Курс", callback_data="menu_rate"))
+    kb.add(types.InlineKeyboardButton("🤖 Агенты", callback_data="menu_agents"))
+    kb.add(types.InlineKeyboardButton("🧠 Память", callback_data="menu_memory"))
+    kb.add(types.InlineKeyboardButton("🛒 Маркет", callback_data="menu_market"))
+    kb.add(types.InlineKeyboardButton("📜 История", callback_data="menu_history"))
+    kb.add(types.InlineKeyboardButton("🔑 API", callback_data="menu_api"))
+    kb.add(types.InlineKeyboardButton("💱 Курс", callback_data="menu_rate"))
     if TERMS_URL: kb.add(types.InlineKeyboardButton("📄 Соглашение", url=TERMS_URL))
     if PRIVACY_URL: kb.add(types.InlineKeyboardButton("🔒 Политика", url=PRIVACY_URL))
     if uid == ADMIN_ID: kb.add(types.InlineKeyboardButton("🛡 Админ", callback_data="admin_root"))
@@ -1084,14 +1116,16 @@ def register_handlers():
         if not anti_flood(c.from_user.id): return bot.answer_callback_query(c.id, "⏳")
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
         upd(c.from_user.id, state="fable_wait")
-        safe_photo(c.from_user.id, IMG_TEXT, f"🔥 **Claude Fable 5.2** ❄️\n\n💰 Цена: 5₽\n🧠 Бесплатных: {u.get('text_free_used',0)}/{FREE_TEXT_LIMIT}\n\n✍️ Вопрос:", parse_mode="Markdown")
+        safe_photo(c.from_user.id, IMG_TEXT, f"🔥 **Claude Fable 5.2** ❄️\n\n💰 Цена: 5₽\n🧠 Бесплатных: {u.get('text_free_used',0)}/{FREE_TEXT_LIMIT}\n\n✍️ Вопрос:", reply_markup=input_kb(), parse_mode="Markdown")
 
-    @bot.callback_query_handler(func=lambda c: c.data in ("txt_gpt6", "txt_opus5", "txt_kimi"))
+    @bot.callback_query_handler(func=lambda c: c.data in ("txt_gpt6", "txt_opus5", "txt_kimi", "txt_free"))
     def cb_txt_model(c):
-        mid = {"txt_gpt6":"gpt-6-astra", "txt_opus5":"claude-opus-5", "txt_kimi":"kimi-k3.1-pro"}[c.data]
+        if c.data == "txt_free": mid = "nvidia/nemotron-3-ultra-550b-a55b:free"
+        else: mid = {"txt_gpt6":"gpt-6-astra", "txt_opus5":"claude-opus-5", "txt_kimi":"kimi-k3.1-pro"}[c.data]
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
         upd(c.from_user.id, state=f"txt_{mid}")
-        safe_photo(c.from_user.id, IMG_TEXT, f"{MODELS[mid]['name']} ❄️\n\n💰 {MODELS[mid]['price']}₽\n{MODEL_HINTS.get(mid,'')}\n🧠 Бесплатных: {max(0, FREE_TEXT_LIMIT - u.get('text_free_used',0))}/{FREE_TEXT_LIMIT}\n\n✍️ Вопрос:", parse_mode="Markdown")
+        price = "Бесплатно" if MODELS[mid]["price"] == 0 else f"{MODELS[mid]['price']}₽"
+        safe_photo(c.from_user.id, IMG_TEXT, f"{MODELS[mid]['name']} ❄️\n\n💰 {price}\n{MODEL_HINTS.get(mid,'')}\n🧠 Бесплатных: {max(0, FREE_TEXT_LIMIT - u.get('text_free_used',0))}/{FREE_TEXT_LIMIT}\n\n✍️ Вопрос:", reply_markup=input_kb(), parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data == "menu_images")
     def cb_imgs(c):
@@ -1107,7 +1141,7 @@ def register_handlers():
         if mid not in MODELS: return
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
         upd(c.from_user.id, state="img_wait", temp_model_id=mid)
-        safe_photo(c.from_user.id, IMG_IMAGE, f"{MODELS[mid]['name']} ❄️\n\n💰 {MODELS[mid]['price']}₽\n{MODEL_HINTS.get(mid,'')}\n🎟 Баланс: {u.get('balance_img',0)}\n\n✍️ Промпт:", parse_mode="Markdown")
+        safe_photo(c.from_user.id, IMG_IMAGE, f"{MODELS[mid]['name']} ❄️\n\n💰 {MODELS[mid]['price']}₽\n{MODEL_HINTS.get(mid,'')}\n🎟 Баланс: {u.get('balance_img',0)}\n\n✍️ Промпт:", reply_markup=input_kb(), parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data == "menu_video")
     def cb_vid(c):
@@ -1122,19 +1156,19 @@ def register_handlers():
         mid = c.data[7:]
         if mid not in VIDEO_MODELS: return
         bot.answer_callback_query(c.id); upd(c.from_user.id, state="vid_wait", temp_model_id=mid)
-        safe_photo(c.from_user.id, IMG_VIDEO, f"{VIDEO_MODELS[mid]['name']} ❄️\n\n💰 {VIDEO_MODELS[mid]['price']}₽\n{VIDEO_HINTS.get(mid,'')}\n\n✍️ Опиши видео:", parse_mode="Markdown")
+        safe_photo(c.from_user.id, IMG_VIDEO, f"{VIDEO_MODELS[mid]['name']} ❄️\n\n💰 {VIDEO_MODELS[mid]['price']}₽\n{VIDEO_HINTS.get(mid,'')}\n\n✍️ Опиши видео:", reply_markup=input_kb(), parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data == "menu_tts")
     def cb_tts(c):
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
         upd(c.from_user.id, state="tts_wait")
-        safe_photo(c.from_user.id, IMG_TEXT, f"🔊 **Озвучка** ❄️\n\n🎟 Баланс: {u.get('balance_tts',0)}\n\n✍️ Текст:", parse_mode="Markdown")
+        safe_photo(c.from_user.id, IMG_TEXT, f"🔊 **Озвучка** ❄️\n\n🎟 Баланс: {u.get('balance_tts',0)}\n\n✍️ Текст:", reply_markup=input_kb(), parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data == "menu_stt")
     def cb_stt(c):
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
         upd(c.from_user.id, state="stt_wait")
-        safe_photo(c.from_user.id, IMG_TEXT, f"🎙 **Расшифровка** ❄️\n\n🎟 Баланс: {u.get('balance_stt',0)}\n\n🎤 Голосовое:", parse_mode="Markdown")
+        safe_photo(c.from_user.id, IMG_TEXT, f"🎙 **Расшифровка** ❄️\n\n🎟 Баланс: {u.get('balance_stt',0)}\n\n🎤 Голосовое:", reply_markup=input_kb(), parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data == "menu_subs")
     def cb_subs(c):
@@ -1357,7 +1391,7 @@ def register_handlers():
     def cb_dark(c):
         if not SHOW_DARK_IN_MENU and c.from_user.id != ADMIN_ID: return bot.answer_callback_query(c.id, "⛔ Недоступно", show_alert=True)
         bot.answer_callback_query(c.id); upd(c.from_user.id, state="dark_wait")
-        safe_photo(c.from_user.id, IMG_TEXT, "🧪 **Экспериментальный режим** ❄️\n\n✍️ Вопрос:", parse_mode="Markdown")
+        safe_photo(c.from_user.id, IMG_TEXT, "🧪 **Экспериментальный режим** ❄️\n\n✍️ Вопрос:", reply_markup=input_kb(), parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data == "gh_pr_fix")
     def cb_gh_pr(c):
@@ -1431,13 +1465,12 @@ def register_handlers():
         uid = m.from_user.id
         if not m.text: return
         u = get_user(uid) or {}
+        if u.get("is_banned"): return safe_send(uid, "⛔ Вы забанены.")
+        
         text = m.text.strip(); state = u.get("state", "")
 
-        # --- ПРЕРЫВАНИЕ СЕССИИ ПРИ КОМАНДЕ /start ---
         if text == "/start":
-            cancel_generation(uid)
-            upd(uid, state="")
-            return start(m)
+            cancel_generation(uid); upd(uid, state=""); return start(m)
         
         if text == "/rate": return cmd_rate(m)
         if text == "/aifix" and uid == ADMIN_ID:
@@ -1468,7 +1501,6 @@ def register_handlers():
                 return safe_send(uid, f"✅ Выдано {amount} ({field}) → {target}")
             except: return safe_send(uid, "❌ Формат: `123456 img 50`", parse_mode="Markdown")
 
-        # --- ОСТАЛЬНЫЕ СЕССИИ ---
         if state == "fable_wait":
             if not anti_flood(uid): return safe_send(uid, "⏳")
             upd(uid, state=""); start_generation(uid)
@@ -1477,7 +1509,7 @@ def register_handlers():
             try: bot.delete_message(uid, status.message_id)
             except: pass
             cancel_generation(uid)
-            if is_generation_active(uid) or True: return safe_send(uid, ans[:4000])
+            return safe_send(uid, ans[:4000])
 
         if state.startswith("txt_"):
             mid = state[4:]
@@ -1576,7 +1608,6 @@ def register_handlers():
 
         if state == "stt_wait": return safe_send(uid, "🎙 Отправь голосовое (не текст).")
 
-        # --- ОБЫЧНЫЙ ЧАТ ---
         if not anti_flood(uid): return safe_send(uid, "⏳")
         start_generation(uid)
         status = safe_send(uid, "❄️ Думаю...", reply_markup=cancel_kb())
@@ -1614,7 +1645,7 @@ def register_handlers():
 # ==========================================================
 def safe_polling():
     while not SHUTDOWN.is_set():
-        try: bot.infinity_polling(timeout=30, long_polling_timeout=25)
+        try: bot.infinity_polling(timeout=20, long_polling_timeout=45, interval=1)
         except Exception as e:
             log.error(f"Polling crashed: {e}. Restart in 5s..."); time.sleep(5)
 
@@ -1633,7 +1664,7 @@ def main():
     threading.Thread(target=payment_poller, daemon=True).start()
     threading.Thread(target=ai_fixer_worker, daemon=True).start()
     threading.Thread(target=safe_polling, daemon=True).start()
-    log.info("❄️ Neuro Studio v73.2 started ❄️")
+    log.info("❄️ Neuro Studio v75 started ❄️")
     while not SHUTDOWN.is_set(): time.sleep(1)
 
 if __name__ == "__main__":
