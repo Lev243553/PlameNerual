@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-❄️ Нейро-Студия v82 — Winter Edition ❄️
-🌟 Финальный фикс: любое сообщение или /start жестко прерывает генерацию.
+❄️ Нейро-Студия v83 — Winter Edition ❄️
+🌟 Terra 6.1 для инженера, жесткая отмена, чистый код.
 """
 import os, sys, io, time, uuid, sqlite3, logging, threading, signal, json, queue, http.server, hashlib
 from datetime import datetime
@@ -195,7 +195,7 @@ TEXT_SUB_TARIFFS = {
     "text_start": {"title":"❄️ Текст Старт", "price": 249, "tokens": 1_000_000, "days":30},
     "text_pro":   {"title":"🌟 Текст Про",   "price": 690, "tokens": 3_000_000, "days":30},
     "text_max":   {"title":"👑 Текст Макс",  "price": 1290, "tokens": 7_000_000, "days":30},
-    "dark_gpt":   {"title":"🧪 Экспериментальный Pro", "price": 199, "tokens": 3_000_000, "days":30},
+    "dark_gpt":   {"title":"🔬 DeepSeek Pro", "price": 199, "tokens": 3_000_000, "days":30},
 }
 
 SUB_HINTS = {
@@ -600,11 +600,9 @@ def gen_text(uid, mid, prompt, is_dark=False, use_history=True, max_tokens=2048)
     
     ok, res, code = _stream(url, headers, body)
     
-    # 👇 ПРОВЕРКА НА ОТМЕНУ 👇
     with _gen_lock:
         if _cancel_flags.get(uid, 0) > start_time:
             return ""
-    # 👆 КОНЕЦ ПРОВЕРКИ 👆
 
     if not ok and code == 400 and "cyber" in str(res).lower() and p != "clodex":
         u2, h2 = _prov("clodex")
@@ -1046,7 +1044,7 @@ def register_handlers():
             try: ref_by = int(args[1][4:])
             except: pass
         add_user(uid, m.from_user.username or f"id{uid}", ref_by)
-        mark_canceled(uid) # 🆕 Отменяем старые запросы
+        mark_canceled(uid)
         u = get_user(uid) or {}
         if not u.get("consent_at"): return show_consent(uid, ref_by)
         if not u.get("free_image") and FREE_WELCOME_IMG > 0:
@@ -1448,7 +1446,7 @@ def register_handlers():
         if c.from_user.id != ADMIN_ID: return
         bot.answer_callback_query(c.id)
         upd(c.from_user.id, state="admin_ai_chat_wait")
-        safe_send(c.from_user.id, "👑 **ИИ-Инженер **🤖 terra-6.1** ❄️\n\nОтправь текст ошибки. Я передам его ИИ, и он предложит фикс.\n\n(Чтобы выйти, напиши /start)", parse_mode="Markdown")
+        safe_send(c.from_user.id, "🤖 **ИИ-Инженер (Terra 6.1)** ❄️\n\nОтправь текст ошибки. Я передам его ИИ, и он предложит фикс.\n\n(Чтобы выйти, напиши /start)", parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data == "admin_users")
     def cb_au(c):
@@ -1496,18 +1494,13 @@ def register_handlers():
 
     @bot.message_handler(content_types=["text"])
     def handle_text(m):
-            uid = m.from_user.id
-            if not m.text: return
-            u = get_user(uid) or {}
-            text = m.text.strip(); state = u.get("state", "")
-            if u.get("is_banned"): return safe_send(uid, "⛔ Вы забанены.")
+        uid = m.from_user.id
+        if not m.text: return
         
-
-        # 🆕 Любое сообщение прерывает старую генерацию
-        if text != "/start" and is_generation_active(uid):
-            cancel_generation(uid)
-            safe_send(uid, "⏹ Старая генерация отменена. Обрабатываю новое сообщение...")
-            upd(uid, state="")
+        u = get_user(uid) or {}
+        if u.get("is_banned"): return safe_send(uid, "⛔ Вы забанены.")
+        
+        text = m.text.strip(); state = u.get("state", "")
 
         if text == "/start":
             cancel_generation(uid); upd(uid, state=""); return start(m)
@@ -1532,10 +1525,11 @@ def register_handlers():
                 return safe_send(uid, "✅ Промпт выставлен! ❄️")
             except: return safe_send(uid, "❌ Формат: Продать: Название | Промпт | 100")
 
-        # 🆕 ОБЩЕНИЕ С ИИ-ИНЖЕНЕРОМ
         if state == "admin_ai_chat_wait" and uid == ADMIN_ID:
-            safe_send(uid, "🤖 Gpt Terra 6.1 думает...")
+            status_msg = safe_send(uid, "🤖 **Terra 6.1** анализирует код... (пара секунд)")
             proposal = _call_clodex_fixer(text)
+            try: bot.delete_message(uid, status_msg.message_id)
+            except: pass
             kb = types.InlineKeyboardMarkup()
             kb.add(types.InlineKeyboardButton("🐙 Создать PR", callback_data="gh_pr_fix"))
             return safe_send(uid, f"🤖 **Ответ ИИ:**\n\n{proposal[:3500]}", reply_markup=kb, parse_mode="Markdown")
@@ -1548,6 +1542,11 @@ def register_handlers():
                 add_balance(target, fm[field], amount); upd(uid, state="")
                 return safe_send(uid, f"✅ Выдано {amount} ({field}) → {target}")
             except: return safe_send(uid, "❌ Формат: `123456 img 50`", parse_mode="Markdown")
+
+        if is_generation_active(uid):
+            cancel_generation(uid)
+            safe_send(uid, "⏹ Старая генерация отменена. Обрабатываю новое сообщение...")
+            upd(uid, state="")
 
         if state == "fable_wait":
             if not anti_flood(uid): return safe_send(uid, "⏳")
@@ -1715,7 +1714,7 @@ def main():
     threading.Thread(target=payment_poller, daemon=True).start()
     threading.Thread(target=ai_fixer_worker, daemon=True).start()
     threading.Thread(target=safe_polling, daemon=True).start()
-    log.info("❄️ Neuro Studio v82 started ❄️")
+    log.info("❄️ Neuro Studio v83 started ❄️")
     while not SHUTDOWN.is_set(): time.sleep(1)
 
 if __name__ == "__main__":
