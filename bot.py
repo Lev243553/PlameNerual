@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-❄️ Нейро-Студия v88 — Winter Edition ❄️
-🌟 Стабильный поллинг, чистая база, рабочий ИИ-Инженер.
+❄️ Нейро-Студия v89 — Winter Edition ❄️
+🌟 Умный ИИ-Инженер (заменяет функции, а не дописывает в конец). Стабильный поллинг.
 """
-import os, sys, io, time, uuid, sqlite3, logging, threading, signal, json, queue, http.server, hashlib, re
+import os, sys, io, time, uuid, sqlite3, logging, threading, signal, json, queue, http.server, hashlib, re, ast
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
@@ -308,7 +308,6 @@ def init_db():
             daily_last TEXT DEFAULT '', daily_streak INTEGER DEFAULT 0,
             tasks_done TEXT DEFAULT '', custom_key TEXT DEFAULT '', custom_model TEXT DEFAULT '')''')
         
-        # 🆕 ЖЕСТКИЙ ФИКС: удаляем старую таблицу api_keys
         cur.execute("DROP TABLE IF EXISTS api_keys")
         cur.execute('''CREATE TABLE IF NOT EXISTS api_keys(key_hash TEXT PRIMARY KEY, user_id INTEGER, created_at REAL, expires_at REAL)''')
         
@@ -519,6 +518,26 @@ def api_access_ok(uid, est=2000):
         if tok + est > p["tokens"]: return False, "limit_tokens"
         cur.execute("UPDATE api_subs SET requests_used=requests_used+1, tokens_used=tokens_used+? WHERE user_id=?", (est, uid))
         return True, "ok"
+
+# ==========================================================
+# 🚦 АНТИФЛУД И КЛАВИАТУРЫ
+# ==========================================================
+_flood = {}; _fl = threading.Lock()
+def anti_flood(uid, min_sec=2):
+    now = time.time()
+    with _fl:
+        if now - _flood.get(uid, 0) < min_sec: return False
+        _flood[uid] = now; return True
+
+def cancel_kb():
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("❌ Отменить", callback_data="cancel_gen"))
+    return kb
+
+def input_kb():
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton("⬅️ Назад в меню", callback_data="menu_main"))
+    return kb
 
 # ==========================================================
 # 🤖 AI
@@ -785,7 +804,7 @@ def _fulfill_grosh(pid, uid, pkg, amt):
     fulfill_by_payload(uid, pkg, amt, "grosh")
 
 # ==========================================================
-# 🔄 POLLER / 🤖 AI FIXER
+# 🔄 POLLER / 🤖 AI FIXER (Умная вставка)
 # ==========================================================
 def _notify_paid(uid, pkg):
     title = "товар"
@@ -826,7 +845,7 @@ def _call_clodex_fixer(user_prompt: str) -> str:
 
     prompt = (
         f"Ты senior Python-разработчик. Ниже полный код моего бота (bot.py) и моя задача/ошибка.\n\n"
-        f"Твоя задача: выдать ГОТОВЫЙ код функции, которую я заменю целиком, чтобы исправить проблему.\n"
+        f"Твоя задача: выдать ГОТОВЫЙ код функции (от def до return), которую я заменю целиком, чтобы исправить проблему.\n"
         f"Пиши только код, без вступлений и объяснений. Только функцию.\n\n"
         f"Моя задача:\n{user_prompt}\n\n"
         f"Вот полный код файла:\n```python\n{bot_code[:100000]}\n```"
@@ -845,6 +864,22 @@ def create_github_pr(fix_text: str) -> str:
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
     base = f"https://api.github.com/repos/{GITHUB_REPO}"
     
+    # Извлекаем функцию из ответа ИИ
+    blocks = re.findall(r'```python\n(.*?)\n```', fix_text, re.DOTALL)
+    if not blocks:
+        return "❌ ИИ не выдал код в блоке ```python."
+    
+    new_func_code = blocks[0].strip()
+    
+    # Парсим, чтобы узнать имя функции
+    try:
+        tree = ast.parse(new_func_code)
+        if not tree.body or not isinstance(tree.body[0], (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return "❌ ИИ выдал не функцию."
+        func_name = tree.body[0].name
+    except Exception as e:
+        return f"❌ Синтаксическая ошибка в коде ИИ: {e}"
+
     target_branch = GITHUB_BRANCH
     r = requests.get(f"{base}/git/ref/heads/{target_branch}", headers=headers)
     if r.status_code != 200:
@@ -862,33 +897,45 @@ def create_github_pr(fix_text: str) -> str:
     content = base64.b64decode(r.json()["content"]).decode("utf-8")
     file_sha = r.json()["sha"]
     
-    new_content = content
-    diff_blocks = re.findall(r'```diff\n(.*?)\n```', fix_text, re.DOTALL)
-    if diff_blocks:
-        for block in diff_blocks:
-            lines = block.splitlines()
-            minus_lines = []
-            plus_lines = []
-            for line in lines:
-                if line.startswith('-') and not line.startswith('---'):
-                    minus_lines.append(line[1:])
-                elif line.startswith('+') and not line.startswith('+++'):
-                    plus_lines.append(line[1:])
-            if minus_lines and plus_lines:
-                old_str = "\n".join(minus_lines)
-                new_str = "\n".join(plus_lines)
-                if old_str in new_content:
-                    new_content = new_content.replace(old_str, new_str, 1)
-    
-    if new_content == content:
-        new_content = content + f"\n\n# 🆕 AI Fix ({datetime.now().isoformat()}):\n# {fix_text[:2000]}\n"
+    # Ищем старую функцию и заменяем
+    try:
+        tree = ast.parse(content)
+        matches = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func_name]
+        if not matches:
+            return f"❌ Функция {func_name} не найдена в файле."
+        
+        node = matches[0]
+        lines = content.splitlines(keepends=True)
+        
+        # Определяем начало (с учетом декораторов)
+        start_line = node.lineno - 1
+        if hasattr(node, 'decorator_list') and node.decorator_list:
+            start_line = node.decorator_list[0].lineno - 1
+            
+        # Определяем конец (по отступу)
+        end_line = node.end_lineno
+        if end_line is None: # для старых версий Python
+            indent = len(lines[start_line]) - len(lines[start_line].lstrip())
+            end_line = start_line + 1
+            while end_line < len(lines):
+                line = lines[end_line]
+                if line.strip() and (len(line) - len(line.lstrip())) <= indent:
+                    break
+                end_line += 1
+        
+        # Собираем новый файл
+        new_content = "".join(lines[:start_line]) + new_func_code + "\n" + "".join(lines[end_line:])
+        compile(new_content, "bot.py", "exec") # Проверка синтаксиса
+        
+    except Exception as e:
+        return f"❌ Ошибка при замене функции: {e}"
     
     requests.put(f"{base}/contents/{GITHUB_FILE_PATH}", headers=headers, json={
-        "message": "🤖 AI Fix", "content": base64.b64encode(new_content.encode()).decode(), "sha": file_sha, "branch": new_branch
+        "message": f"🤖 AI Fix: {func_name}", "content": base64.b64encode(new_content.encode()).decode(), "sha": file_sha, "branch": new_branch
     })
     
     r = requests.post(f"{base}/pulls", headers=headers, json={
-        "title": "🤖 AI Fix Proposal", "head": new_branch, "base": target_branch, "body": f"От ИИ:\n\n```text\n{fix_text[:3000]}\n```"
+        "title": f"🤖 AI Fix: {func_name}", "head": new_branch, "base": target_branch, "body": f"Автоматическая замена функции `{func_name}`."
     })
     return f"✅ PR создан: {r.json()['html_url']}" if r.status_code == 201 else f"❌ PR ошибка: {r.text[:200]}"
 
@@ -1744,22 +1791,8 @@ def main():
     threading.Thread(target=payment_poller, daemon=True).start()
     threading.Thread(target=ai_fixer_worker, daemon=True).start()
     threading.Thread(target=safe_polling, daemon=True).start()
-    log.info("❄️ Neuro Studio v88 started ❄️")
+    log.info("❄️ Neuro Studio v89 started ❄️")
     while not SHUTDOWN.is_set(): time.sleep(1)
 
 if __name__ == "__main__":
     main()
-
-
-# 🆕 AI Fix (2026-11-12T20:14:48.798129):
-# def input_kb():
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="cancel_gen"))
-    return kb
-
-
-# 🆕 AI Fix (2026-11-12T20:23:34.510758):
-# def input_kb():
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="cancel_gen"))
-    return kb
