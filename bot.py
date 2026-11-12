@@ -1669,3 +1669,51 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# 🆕 AI Fix (2026-11-12T08:47:44.036663):
+# ## Что показывает лог
+
+Событий два, и они связаны:
+
+1. `requests.exceptions.ReadTimeout ... (read timeout=30)` — клиент оборвал `getUpdates` по своему read-таймауту в 30 с.
+2. Сразу за ним серия `409 Conflict: terminated by other getUpdates request` каждые ~4 с.
+
+`409` в Telegram означает: «по этому токену уже есть активный `getUpdates`». Тут это не «кто-то ещё запустил бота» в первую очередь, а **следствие** пункта 1: длинный поллинг на стороне Telegram живёт до `long_polling_timeout` (+ джиттер), клиентский сокет умирает раньше, `telebot` немедленно перезапускает воркер и шлёт новый `getUpdates` с тем же `offset`, пока предыдущий запрос ещё висит на сервере → второй запрос получает 409. Дальше цикл повторяется без backoff — отсюда «шторм» в логе.
+
+## Корневая причина (баг)
+
+`apihelper.READ_TIMEOUT = 30` (видно из `read timeout=30`) **не больше** `long_polling_timeout`, с которым вызывается поллинг (у вас он тоже 30). Инвариант, который должен соблюдаться:
+
+```
+READ_TIMEOUT  >  long_polling_timeout + запас (10–20 с на джиттер/сеть)
+```
+
+У вас они равны → `ReadTimeout` гарантирован при каждом «пустом» long-poll. Плюс нет защиты от второго поллера (старый контейнер, реплика, локальный запуск) — тогда 409 будет уже сам по себе.
+
+## Патч (app-level, рекомендую)
+
+Предполагая, что вход выглядит как-то так: `TeleBot(TOKEN, threaded=True)` + `bot.polling(non_stop=True)`, а `long_polling_timeout` = 30.
+
+```diff
+diff --git a/bot.py b/bot.py
+--- a/bot.py
++++ b/bot.py
+@@ -1,14 +1,48 @@
++import fcntl
++import os
++import sys
++
+ import telebot
++from telebot import apihelper
+ 
+ BOT_TOKEN = os.environ["BOT_TOKEN"]
+-LONG_POLL_TIMEOUT = 30
++
++# Telegram держит getUpdates открытым до long_polling_timeout секунд
++# и добавляет джиттер. HTTP read timeout ОБЯЗАН быть строго больше,
++# иначе клиент рвёт соединение первым:
++#   ReadTimeout(read timeout=30)
++# а немедленный ретрай сталкивается с ещё живым long-poll'ом:
++#   409 Conflict: terminated by other getUpdates request
++LONG_POLL_TIME
