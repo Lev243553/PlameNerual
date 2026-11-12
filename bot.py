@@ -1669,3 +1669,51 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# 🆕 AI Fix (2026-11-12T09:43:19.916974):
+# ## Диагноз
+
+Баг не в `telebot`, а в жизненном цикле поллинга в приложении. В логе два разных события:
+
+1. **`ReadTimeout` (read timeout=30)** — сетевой сбой/обрыв long-poll запроса. Сам по себе он не фатален: серверная сторона `getUpdates` на стороне Telegram ещё какое-то время может считать запрос активным.
+2. **`409 Conflict: terminated by other getUpdates request`** — по этому токену **одновременно** висит больше одного `getUpdates`. Это не retryable-ошибка, ретраить её бессмысленно: пока живы два поллера, они будут по очереди убивать запросы друг друга — что и видно по логу (409 каждые ~4 секунды, стабильно).
+
+Почему появился второй поллер — типовые причины, все сводятся к одному:
+
+- рестарт-цикл `while True: bot.polling(...)` вокруг `polling()`/после исключения: `ReadTimeout` не отменяет запрос на стороне Telegram, а новый вызов `getUpdates` стартует сразу → overlap → 409;
+- `bot.polling()` в telebot по умолчанию `threaded=True` и **возвращает управление сразу** после старта потока — внешний `while` плодит поллеры;
+- несколько процессов/реплик/воркеров (gunicorn `workers > 1`, k8s `replicas > 1`, `RollingUpdate`, старый контейнер не убит) с одним токеном;
+- забытый webhook (тогда текст 409 другой: `can't use getUpdates method while webhook is active`).
+
+Правильная схема: **один процесс, один блокирующий `infinity_polling`**, рестарты — только внутри него, плюс защита от второго инстанса.
+
+## Патч
+
+Патчим код приложения, не `site-packages`. Предполагая типичный `bot/main.py` (если структура другая — пришли файл, адаптирую):
+
+```diff
+--- a/bot/main.py
++++ b/bot/main.py
+@@ -1,19 +1,49 @@
+-import time
+-
+-import telebot
+-
+-from config import TOKEN
+-
+-bot = telebot.TeleBot(TOKEN)
+-
+-
+-@bot.message_handler(commands=["start"])
+-def start(message):
+-    bot.reply_to(message, "hi")
+-
+-
+-if __name__ == "__main__":
+-    while True:
+-        try:
+-            bot.polling(none_stop=True, timeout=30)
+-        except Exception as e:
+-            print(e)
+-            time.slee
