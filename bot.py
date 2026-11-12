@@ -1719,3 +1719,68 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# 🆕 AI Fix (2026-11-12T13:53:57.566623):
+# В логе две независимые ошибки.
+
+1. `UnboundLocalError` — переменная `u` присваивается только в одной из веток `handle_text`, но используется до этого. Из-за наличия присваивания Python считает `u` локальной переменной всей функции.
+
+2. `api_keys` уже существует в старой SQLite-базе. Изменение `CREATE TABLE IF NOT EXISTS` не меняет структуру существующей таблицы, поэтому новая колонка `key_hash` автоматически не появилась.
+
+Патч:
+
+```diff
+diff --git a/bot.py b/bot.py
+index 1234567..89abcde 100644
+--- a/bot.py
++++ b/bot.py
+@@ -1494,8 +1494,11 @@
+ @bot.message_handler(content_types=["text"])
+ def handle_text(m):
+-    text = m.text.strip(); state = u.get("state", "")
++    text = (m.text or "").strip()
++
++    # Загружаем пользователя до первого обращения к u.
++    # Если в проекте helper называется иначе, использовать его фактическое имя.
++    u = get_user(m.from_user.id) or {}
++    state = u.get("state", "")
+ 
+     # остальная логика handle_text...
+ 
+ 
+@@ -474,8 +477,20 @@ def generate_api_key(user_id):
+     raw = secrets.token_urlsafe(32)
+     key_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+ 
+-    c.cursor().execute(
++    cur = c.cursor()
++
++    # Миграция существующей SQLite-базы.
++    # CREATE TABLE IF NOT EXISTS не добавляет колонки в уже созданную таблицу.
++    columns = {
++        row[1]
++        for row in cur.execute("PRAGMA table_info(api_keys)").fetchall()
++    }
++    if "key_hash" not in columns:
++        cur.execute("ALTER TABLE api_keys ADD COLUMN key_hash TEXT")
++
++    cur.execute(
+         "INSERT INTO api_keys(key_hash, user_id, created_at, expires_at) "
+         "VALUES(?,?,?,?)",
+         (key_hash, user_id, created_at, expires_at),
+```
+
+Если в проекте нет функции `get_user`, нужно использовать существующий метод загрузки пользователя, например:
+
+```python
+u = load_user(m.from_user.id) or {}
+```
+
+или добавить минимальную реализацию:
+
+```python
+def get_user(user_id):
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+     
