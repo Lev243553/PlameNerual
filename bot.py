@@ -853,7 +853,7 @@ def _call_clodex_fixer(user_prompt: str) -> str:
     
     try:
         url, headers = _prov("clodex")
-        body = {"model": "gpt-6.1-sol-ultrafast", "messages": [{"role": "user", "content": prompt}], "stream": False}
+        body = {"model": "gpt-6-astra-ultrafast", "messages": [{"role": "user", "content": prompt}], "stream": False}
         r = requests.post(url, headers=headers, json=body, timeout=HTTP_TIMEOUT_LONG)
         if r.status_code == 200: return r.json()["choices"][0]["message"]["content"]
         return f"❌ Ошибка Clodex: {r.text[:200]}"
