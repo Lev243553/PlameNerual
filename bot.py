@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-❄️ Нейро-Студия v99 — Absolute Edition ❄️
-🌟 Полный код. Фото вместо ссылок. Своя сумма. Оплата при нехватке. Все кнопки работают.
+❄️ Нейро-Студия v101 — Full Arsenal Edition ❄️
+🌟 Все модели (Gemini 4, Grok, GLM, Sol, Astra). Выбор уровня мышления. Фото байтами.
 """
 import os, sys, io, time, uuid, sqlite3, logging, threading, signal, json, queue, http.server, hashlib
 from datetime import datetime
@@ -19,9 +19,6 @@ load_dotenv(override=False)
 log = logging.getLogger("neuro")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-# ==========================================================
-# 🆕 НОВЫЕ ENV
-# ==========================================================
 NEW_IMG_EXAMPLES_URL = os.getenv("NEW_IMG_EXAMPLES_URL", "https://i.postimg.cc/0QN2QW2X/IMG-20261110-204842-470.jpg")
 REFUND_ON_ERROR = int(os.getenv("REFUND_ON_ERROR", "1"))
 
@@ -34,9 +31,6 @@ IMG_SUB   = "https://i.postimg.cc/0QCWtnY8/IMG-20261110-210033-656.jpg"
 IMG_EXAMPLES = NEW_IMG_EXAMPLES_URL
 IMG_HELP     = "https://i.postimg.cc/0QN2QW2X/IMG-20261110-204842-470.jpg"
 
-# ==========================================================
-# ⚙️ ENV (НЕ ТРОГАЕМ)
-# ==========================================================
 def _env_int(n, d, m=None):
     r = os.getenv(n)
     if not r: v = d
@@ -142,17 +136,31 @@ class FxAnalyzer:
     def rub_to_usd(cls, rub: int) -> float:
         return round((float(rub) / cls.current()) * (1 + FX_MARKUP_PCT / 100), 2)
 
+# ==========================================================
+# 🤖 МОДЕЛИ (ПОЛНЫЙ АРСЕНАЛ)
+# ==========================================================
 MODELS = {
     "tongyi-mai/z-image": {"name":"⚡ Fast", "type":"image", "price":4, "provider":"polza"},
     "google/gemini-2.5-flash-image": {"name":"✨ Balanced", "type":"image", "price":7, "provider":"polza"},
     "black-forest-labs/flux.2-pro": {"name":"🎨 Realism", "type":"image", "price":12, "provider":"polza"},
     "google/gemini-3-pro-image-preview": {"name":"👑 Ultra 4K", "type":"image", "price":29, "provider":"polza"},
+    
+    # Текст (Топ)
+    "gemini-4-carbon":   {"name":"🧠 Carbon",   "type":"text", "price":7, "provider":"clodex"},
+    "claude-fable-5.2":  {"name":"🔥 Fable 5.2", "type":"text", "price":5, "provider":"clodex"},
+    "gpt-6-astra":       {"name":"🌟 Astra",     "type":"text", "price":3, "provider":"clodex"},
+    "claude-opus-5":     {"name":"🎭 Opus 5",    "type":"text", "price":3, "provider":"clodex"},
+    
+    # Текст (Быстрые и дешёвые)
+    "gemini-4-hydrogen": {"name":"🚀 Hydrogen", "type":"text", "price":2, "provider":"clodex"},
+    "grok-4.7-build-fast":   {"name":"🤖 Grok Fast", "type":"text", "price":2, "provider":"clodex"},
+    "gpt-6.1-sol-ultrafast": {"name":"☀️ Sol Ultra", "type":"text", "price":3, "provider":"clodex"},
+    "glm-5.3":               {"name":"🇨🇳 GLM 5.3", "type":"text", "price":1, "provider":"clodex"},
+    "gpt-6-luna":        {"name":"⚡ Luna",      "type":"text", "price":1, "provider":"clodex"},
+    "deepseek-v4.1-flash": {"name":"🔬 DeepSeek","type":"text", "price":1, "provider":"clodex"},
+    
+    # Текст (Бесплатно)
     "nvidia/nemotron-3-ultra-550b-a55b:free": {"name":"🆓 Free", "type":"text", "price":0, "provider":"openrouter"},
-    "gpt-6-luna": {"name":"⚡ Fast", "type":"text", "price":1, "provider":"clodex"},
-    "deepseek-v4.1-flash": {"name":"🔬 Cheap", "type":"text", "price":1, "provider":"clodex"},
-    "gpt-6-astra": {"name":"🌟 Universal", "type":"text", "price":3, "provider":"clodex"},
-    "claude-opus-5": {"name":"🎭 Deep", "type":"text", "price":3, "provider":"clodex"},
-    "claude-fable-5.2": {"name":"🔥 Top", "type":"text", "price":5, "provider":"clodex"},
 }
 
 VIDEO_MODELS = {
@@ -192,11 +200,19 @@ MODEL_HINTS = {
     "google/gemini-2.5-flash-image": "✨ Баланс цена/качество.",
     "black-forest-labs/flux.2-pro": "🎨 Фотореализм.",
     "google/gemini-3-pro-image-preview": "👑 Топ: 4K, надписи.",
-    "gpt-6-luna": "⚡ Быстрый и дешёвый.",
-    "deepseek-v4.1-flash": "🔬 Самый дешёвый.",
+    
+    "gemini-4-carbon": "🧠 Топ-мозг для сложных задач.",
+    "claude-fable-5.2": "🔥 Самая умная (Anthropic).",
     "gpt-6-astra": "🌟 Умный универсал.",
     "claude-opus-5": "🎭 Глубокие рассуждения.",
-    "claude-fable-5.2": "🔥 Самая умная.",
+    
+    "gemini-4-hydrogen": "🚀 Быстрая и умная база.",
+    "grok-4.7-build-fast": "🤖 Свободный стиль xAI.",
+    "gpt-6.1-sol-ultrafast": "☀️ Очень быстрый и умный.",
+    "glm-5.3": "🇨🇳 Отлично следует инструкциям.",
+    "gpt-6-luna": "⚡ Быстрый и дешёвый.",
+    "deepseek-v4.1-flash": "🔬 Самый дешёвый.",
+    
     "nvidia/nemotron-3-ultra-550b-a55b:free": "🆓 Бесплатно.",
 }
 
@@ -431,7 +447,7 @@ def check_tasks(uid):
 def _hash_key(k): return hashlib.sha256(k.encode()).hexdigest()
 
 def generate_api_key(uid, days=30):
-    raw = f"sk_v99_{uuid.uuid4().hex[:16]}"
+    raw = f"sk_v101_{uuid.uuid4().hex[:16]}"
     with DbConn() as c:
         c.cursor().execute("INSERT INTO api_keys(key_hash, user_id, created_at, expires_at) VALUES(?,?,?,?)",
                            (_hash_key(raw), uid, time.time(), time.time() + days*86400))
@@ -508,7 +524,7 @@ def _stream(url, headers, body, attempts=3):
             last = str(e); time.sleep(2**i)
     return False, f"❄️ Недоступно. ({last})", 0
 
-def gen_text(uid, mid, prompt, use_history=True, max_tokens=2048):
+def gen_text(uid, mid, prompt, use_history=True, max_tokens=2048, thinking_level=None):
     if mid not in MODELS: return f"❌ Модель {mid} не найдена"
     p = MODELS[mid]["provider"]
     url, headers = _prov(p)
@@ -517,7 +533,13 @@ def gen_text(uid, mid, prompt, use_history=True, max_tokens=2048):
         msgs.append({"role": "system", "content": "Ты — ИИ Нейро. Никогда не говори, что ты ChatGPT или OpenAI. Ты в Нейро-Студии."})
     if use_history: msgs.extend(get_history(uid))
     msgs.append({"role":"user","content":prompt})
+    
     body = {"model": mid, "messages": msgs, "stream": True, "max_tokens": max_tokens}
+    
+    # 🆕 Уровень мышления для Gemini
+    if mid.startswith("gemini-4-") and thinking_level:
+        body["thinking_level"] = thinking_level
+        
     ok, res, code = _stream(url, headers, body)
     if not ok and code == 400 and "cyber" in str(res).lower() and p != "clodex":
         u2, h2 = _prov("clodex")
@@ -808,12 +830,20 @@ def show_main_menu(uid):
 def show_text_menu(uid):
     u = get_user(uid) or {}
     kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(types.InlineKeyboardButton("🆓 Free (Nemotron)", callback_data="txt_free"))
-    kb.add(types.InlineKeyboardButton("⚡ Fast — 1₽", callback_data="txt_luna"))
-    kb.add(types.InlineKeyboardButton("🔬 Cheap — 1₽", callback_data="txt_deepseek"))
-    kb.add(types.InlineKeyboardButton("🌟 Universal — 3₽", callback_data="txt_astra"))
-    kb.add(types.InlineKeyboardButton("🎭 Deep — 3₽", callback_data="txt_opus5"))
-    kb.add(types.InlineKeyboardButton("🔥 Top — 5₽", callback_data="txt_fable"))
+    # Топ
+    kb.add(types.InlineKeyboardButton("🧠 Carbon — 7₽ (сложные)", callback_data="txt_carbon"))
+    kb.add(types.InlineKeyboardButton("🔥 Fable 5.2 — 5₽ (топ)", callback_data="txt_fable"))
+    kb.add(types.InlineKeyboardButton("🌟 Astra — 3₽", callback_data="txt_astra"))
+    kb.add(types.InlineKeyboardButton("☀️ Sol Ultra — 3₽", callback_data="txt_sol"))
+    kb.add(types.InlineKeyboardButton("🎭 Opus 5 — 3₽", callback_data="txt_opus5"))
+    # Дешёвые
+    kb.add(types.InlineKeyboardButton("🚀 Hydrogen — 2₽", callback_data="txt_hydrogen"))
+    kb.add(types.InlineKeyboardButton("🤖 Grok Fast — 2₽", callback_data="txt_grok"))
+    kb.add(types.InlineKeyboardButton("⚡ Luna — 1₽", callback_data="txt_luna"))
+    kb.add(types.InlineKeyboardButton("🇨🇳 GLM 5.3 — 1₽", callback_data="txt_glm"))
+    kb.add(types.InlineKeyboardButton("🔬 DeepSeek — 1₽", callback_data="txt_deepseek"))
+    # Бесплатно и агенты
+    kb.add(types.InlineKeyboardButton("🆓 Nemotron (Бесплатно)", callback_data="txt_free"))
     kb.add(types.InlineKeyboardButton("🤖 3 мнения ИИ", callback_data="menu_agents"))
     kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
     safe_photo(uid, IMG_TEXT, f"💬 **Текст / ИИ** ❄️\n\n🎟 Бесплатных: {max(0, FREE_TEXT_LIMIT - u.get('text_free_used',0))}/{FREE_TEXT_LIMIT}\n\nВыбери модель 👇", reply_markup=kb, parse_mode="Markdown")
@@ -942,23 +972,56 @@ def register_handlers():
         except: pass
         show_main_menu(c.from_user.id)
 
-    # ---------- ТЕКСТ ----------
-    @bot.callback_query_handler(func=lambda c: c.data in ("txt_luna", "txt_deepseek", "txt_astra", "txt_opus5", "txt_fable", "txt_free"))
+    # ---------- ТЕКСТ (ВЫБОР МОДЕЛИ) ----------
+    @bot.callback_query_handler(func=lambda c: c.data in ("txt_hydrogen", "txt_carbon", "txt_luna", "txt_deepseek", "txt_astra", "txt_opus5", "txt_fable", "txt_free", "txt_sol", "txt_grok", "txt_glm"))
     def cb_txt_model(c):
         mapping = {
-            "txt_free": "nvidia/nemotron-3-ultra-550b-a55b:free",
-            "txt_luna": "gpt-6-luna",
-            "txt_deepseek": "deepseek-v4.1-flash",
+            "txt_hydrogen": "gemini-4-hydrogen",
+            "txt_carbon": "gemini-4-carbon",
+            "txt_fable": "claude-fable-5.2",
             "txt_astra": "gpt-6-astra",
             "txt_opus5": "claude-opus-5",
-            "txt_fable": "claude-fable-5.2",
+            "txt_sol": "gpt-6.1-sol-ultrafast",
+            "txt_grok": "grok-4.7-build-fast",
+            "txt_glm": "glm-5.3",
+            "txt_luna": "gpt-6-luna",
+            "txt_deepseek": "deepseek-v4.1-flash",
+            "txt_free": "nvidia/nemotron-3-ultra-550b-a55b:free",
         }
         mid = mapping.get(c.data)
         if not mid: return bot.answer_callback_query(c.id, "❌")
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
+        
+        # 🆕 Если выбрана модель с уровнями мышления — показываем их
+        if mid in ("gemini-4-hydrogen", "gemini-4-carbon"):
+            kb = types.InlineKeyboardMarkup(row_width=1)
+            kb.add(types.InlineKeyboardButton("🟢 Low (быстро)", callback_data=f"think_{mid}_low"))
+            kb.add(types.InlineKeyboardButton("🟡 Medium (баланс)", callback_data=f"think_{mid}_medium"))
+            kb.add(types.InlineKeyboardButton("🔴 High (глубоко)", callback_data=f"think_{mid}_high"))
+            kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_text"))
+            return safe_photo(c.from_user.id, IMG_TEXT, f"{MODELS[mid]['name']} ❄️\n\nВыбери глубину мышления:\n🟢 **Low** — мгновенный ответ, простые задачи\n🟡 **Medium** — баланс (по умолчанию)\n🔴 **High** — глубокий анализ, сложные задачи", reply_markup=kb, parse_mode="Markdown")
+        
         upd(c.from_user.id, state=f"txt_{mid}")
         price = "Бесплатно" if MODELS[mid]["price"] == 0 else f"{MODELS[mid]['price']}₽"
         safe_photo(c.from_user.id, IMG_TEXT, f"{MODELS[mid]['name']} ❄️\n\n💰 {price}\n{MODEL_HINTS.get(mid,'')}\n🧠 Бесплатных: {max(0, FREE_TEXT_LIMIT - u.get('text_free_used',0))}/{FREE_TEXT_LIMIT}\n\n✍️ Вопрос:", reply_markup=input_kb(), parse_mode="Markdown")
+
+    # 🆕 ОБРАБОТЧИК УРОВНЯ МЫШЛЕНИЯ
+    @bot.callback_query_handler(func=lambda c: c.data.startswith("think_"))
+    def cb_think_level(c):
+        parts = c.data.split("_")
+        if len(parts) < 3: return bot.answer_callback_query(c.id, "❌")
+        mid, level = parts[1], parts[2]
+        
+        if mid not in MODELS: return bot.answer_callback_query(c.id, "❌")
+        bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
+        
+        # Сохраняем уровень в state (например: txt_gemini-4-hydrogen_low)
+        upd(c.from_user.id, state=f"txt_{mid}_{level}")
+        
+        price = f"{MODELS[mid]['price']}₽"
+        level_name = {"low": "Low 🟢", "medium": "Medium 🟡", "high": "High 🔴"}.get(level, level)
+        
+        safe_photo(c.from_user.id, IMG_TEXT, f"{MODELS[mid]['name']} ({level_name}) ❄️\n\n💰 {price}\n{MODEL_HINTS.get(mid,'')}\n🧠 Бесплатных: {max(0, FREE_TEXT_LIMIT - u.get('text_free_used',0))}/{FREE_TEXT_LIMIT}\n\n✍️ Вопрос:", reply_markup=input_kb(), parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data == "menu_agents")
     def cb_ag(c):
@@ -1326,8 +1389,12 @@ def register_handlers():
             payload = f"custom_{uid}_{amount}"
             return safe_send(uid, f"💎 **Пополнение на {amount}₽** ❄️\n\nВыбери способ:", reply_markup=payment_choice_kb(payload, amount), parse_mode="Markdown")
 
+        # 🆕 ОБРАБОТКА ТЕКСТА С УЧЕТОМ УРОВНЯ МЫШЛЕНИЯ
         if state.startswith("txt_"):
-            mid = state[4:]
+            parts = state.split("_")
+            mid = parts[1]
+            thinking_level = parts[2] if len(parts) > 2 else None
+            
             if mid not in MODELS: upd(uid, state=""); return safe_send(uid, "❌ Модель потеряна.")
             price = MODELS[mid]["price"]
             free_left = max(0, FREE_TEXT_LIMIT - (u.get("text_free_used") or 0))
@@ -1338,8 +1405,13 @@ def register_handlers():
                 upd(uid, state="")
                 return show_insufficient(uid, price, "balance_tts")
             upd(uid, state="")
-            status = safe_send(uid, f"❄️ {MODELS[mid]['name']} думает..." + (" (бесплатно)" if used_free else ""))
-            ans = gen_text(uid, mid, text)
+            
+            lvl_text = f" ({thinking_level})" if thinking_level else ""
+            status = safe_send(uid, f"❄️ {MODELS[mid]['name']}{lvl_text} думает..." + (" (бесплатно)" if used_free else ""))
+            
+            # Передаем thinking_level в gen_text
+            ans = gen_text(uid, mid, text, thinking_level=thinking_level)
+            
             try: bot.delete_message(uid, status.message_id)
             except: pass
             if ans: safe_send(uid, ans[:4000])
@@ -1464,7 +1536,7 @@ def main():
     start_health(HEALTH_PORT)
     threading.Thread(target=payment_poller, daemon=True).start()
     threading.Thread(target=safe_polling, daemon=True).start()
-    log.info("❄️ Neuro Studio v99 started ❄️")
+    log.info("❄️ Neuro Studio v101 started ❄️")
     while not SHUTDOWN.is_set(): time.sleep(1)
 
 if __name__ == "__main__":
