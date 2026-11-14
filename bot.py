@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-❄️ Нейро-Студия v101 — Full Arsenal Edition ❄️
-🌟 Все модели (Gemini 4, Grok, GLM, Sol, Astra). Выбор уровня мышления. Фото байтами.
+❄️ Нейро-Студия v103 — Video Builder Edition ❄️
+🌟 Конструктор видео (время, разрешение, формат). CLODEX API. Уровни мышления.
 """
 import os, sys, io, time, uuid, sqlite3, logging, threading, signal, json, queue, http.server, hashlib
 from datetime import datetime
@@ -19,6 +19,9 @@ load_dotenv(override=False)
 log = logging.getLogger("neuro")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
+# ==========================================================
+# ❄️ КАРТИНКИ И НАСТРОЙКИ
+# ==========================================================
 NEW_IMG_EXAMPLES_URL = os.getenv("NEW_IMG_EXAMPLES_URL", "https://i.postimg.cc/0QN2QW2X/IMG-20261110-204842-470.jpg")
 REFUND_ON_ERROR = int(os.getenv("REFUND_ON_ERROR", "1"))
 
@@ -42,6 +45,9 @@ def _env_int(n, d, m=None):
 def _env_float(n, d):
     r = os.getenv(n); return float(r) if r else d
 
+# ==========================================================
+# ⚙️ ENV
+# ==========================================================
 TOKEN = os.getenv("BOT_TOKEN")
 POLZA_KEY = os.getenv("POLZA_API_KEY")
 POLZA_BASE = os.getenv("POLZA_API_URL", "https://polza.ai/api/v1")
@@ -137,21 +143,21 @@ class FxAnalyzer:
         return round((float(rub) / cls.current()) * (1 + FX_MARKUP_PCT / 100), 2)
 
 # ==========================================================
-# 🤖 МОДЕЛИ (ПОЛНЫЙ АРСЕНАЛ)
+# 🤖 МОДЕЛИ
 # ==========================================================
 MODELS = {
-    "tongyi-mai/z-image": {"name":"⚡ Fast", "type":"image", "price":4, "provider":"polza"},
-    "google/gemini-2.5-flash-image": {"name":"✨ Balanced", "type":"image", "price":7, "provider":"polza"},
-    "black-forest-labs/flux.2-pro": {"name":"🎨 Realism", "type":"image", "price":12, "provider":"polza"},
-    "google/gemini-3-pro-image-preview": {"name":"👑 Ultra 4K", "type":"image", "price":29, "provider":"polza"},
-    
-    # Текст (Топ)
+    # Картинки (CLODEX)
+    "wan-2.7-image": {"name":"💨 Schnell", "type":"image", "price":4, "provider":"clodex"},
+    "flux-3-image": {"name":"⚡ Flux", "type":"image", "price":8, "provider":"clodex"},
+    "gpt-image-2.5": {"name":"✨ GPT-2.5", "type":"image", "price":12, "provider":"clodex"},
+    "gpt-image-2.6": {"name":"👑 Ultra 2.6", "type":"image", "price":20, "provider":"clodex"},
+
+    # Текст (CLODEX/OpenRouter)
     "gemini-4-carbon":   {"name":"🧠 Carbon",   "type":"text", "price":7, "provider":"clodex"},
     "claude-fable-5.2":  {"name":"🔥 Fable 5.2", "type":"text", "price":5, "provider":"clodex"},
     "gpt-6-astra":       {"name":"🌟 Astra",     "type":"text", "price":3, "provider":"clodex"},
     "claude-opus-5":     {"name":"🎭 Opus 5",    "type":"text", "price":3, "provider":"clodex"},
     
-    # Текст (Быстрые и дешёвые)
     "gemini-4-hydrogen": {"name":"🚀 Hydrogen", "type":"text", "price":2, "provider":"clodex"},
     "grok-4.7-build-fast":   {"name":"🤖 Grok Fast", "type":"text", "price":2, "provider":"clodex"},
     "gpt-6.1-sol-ultrafast": {"name":"☀️ Sol Ultra", "type":"text", "price":3, "provider":"clodex"},
@@ -159,20 +165,20 @@ MODELS = {
     "gpt-6-luna":        {"name":"⚡ Luna",      "type":"text", "price":1, "provider":"clodex"},
     "deepseek-v4.1-flash": {"name":"🔬 DeepSeek","type":"text", "price":1, "provider":"clodex"},
     
-    # Текст (Бесплатно)
     "nvidia/nemotron-3-ultra-550b-a55b:free": {"name":"🆓 Free", "type":"text", "price":0, "provider":"openrouter"},
 }
 
+# Видео (теперь цена за 1 секунду базового качества)
 VIDEO_MODELS = {
-    "minimax/hailuo-3-max": {"name":"💨 Demo 5s", "price":19, "type":"per_video", "duration":5},
-    "kling/v3": {"name":"🎥 Standard 5s", "price":19, "type":"per_video", "duration":5},
-    "google/veo3_fast": {"name":"🎬 Premium 8s", "price":89, "type":"per_video", "duration":8},
+    "clodex-video/hailuo-2.3-fast": {"name":"💨 Hailuo Fast", "price":3, "base_sec":6},
+    "clodex-video/wan-2.6": {"name":"🎥 Wan 2.6", "price":5, "base_sec":5},
+    "clodex-video/kling-3.0-turbo": {"name":"🔥 Kling Turbo", "price":10, "base_sec":5},
+    "clodex-video/veo-3.1-fast": {"name":"🎬 Veo Fast", "price":10, "base_sec":8},
 }
 
-def video_cost(mid):
-    m = VIDEO_MODELS[mid]
-    return m["price"] * m.get("duration", 5) if m["type"] == "per_sec" else m["price"]
-
+# ==========================================================
+# 📝 ТАРИФЫ И ПАКЕТЫ
+# ==========================================================
 TEXT_SUB_TARIFFS = {
     "text_start": {"title":"❄️ Текст Старт", "price": 249,  "tokens": 500_000,  "days":30},
     "text_pro":   {"title":"🌟 Текст Про",   "price": 690,  "tokens": 1_500_000,"days":30},
@@ -196,30 +202,28 @@ API_SUB_PLANS = {
 }
 
 MODEL_HINTS = {
-    "tongyi-mai/z-image": "⚡ Самая быстрая.",
-    "google/gemini-2.5-flash-image": "✨ Баланс цена/качество.",
-    "black-forest-labs/flux.2-pro": "🎨 Фотореализм.",
-    "google/gemini-3-pro-image-preview": "👑 Топ: 4K, надписи.",
-    
+    "wan-2.7-image": "💨 Самая дешёвая.",
+    "flux-3-image": "⚡ Баланс цена/качество.",
+    "gpt-image-2.5": "✨ Умная, понимает промпты.",
+    "gpt-image-2.6": "👑 Топ: детализация, скорость.",
     "gemini-4-carbon": "🧠 Топ-мозг для сложных задач.",
     "claude-fable-5.2": "🔥 Самая умная (Anthropic).",
     "gpt-6-astra": "🌟 Умный универсал.",
     "claude-opus-5": "🎭 Глубокие рассуждения.",
-    
     "gemini-4-hydrogen": "🚀 Быстрая и умная база.",
     "grok-4.7-build-fast": "🤖 Свободный стиль xAI.",
     "gpt-6.1-sol-ultrafast": "☀️ Очень быстрый и умный.",
     "glm-5.3": "🇨🇳 Отлично следует инструкциям.",
     "gpt-6-luna": "⚡ Быстрый и дешёвый.",
     "deepseek-v4.1-flash": "🔬 Самый дешёвый.",
-    
     "nvidia/nemotron-3-ultra-550b-a55b:free": "🆓 Бесплатно.",
 }
 
 VIDEO_HINTS = {
-    "minimax/hailuo-3-max": "💨 5 сек. Дешёвый вход.",
-    "kling/v3": "🎥 5 сек. Рабочая лошадка.",
-    "google/veo3_fast": "🎬 8 сек. Флагман.",
+    "clodex-video/hailuo-2.3-fast": "💨 6 сек. Дешёвый вход.",
+    "clodex-video/wan-2.6": "🎥 5 сек. Рабочая лошадка.",
+    "clodex-video/kling-3.0-turbo": "🔥 5 сек. Высокое качество.",
+    "clodex-video/veo-3.1-fast": "🎬 8 сек. Флагман.",
 }
 
 ALLOWED_COLS = {
@@ -231,6 +235,9 @@ ALLOWED_COLS = {
 }
 BALANCE_FIELDS = {"balance_img","balance_vid","balance_tts","balance_stt","balance_aud","balance_edit","balance_anim","balance_up"}
 
+# ==========================================================
+# 🗄️ DB
+# ==========================================================
 class Db:
     _pool = None; _sem = None; path = ""
     @classmethod
@@ -447,7 +454,7 @@ def check_tasks(uid):
 def _hash_key(k): return hashlib.sha256(k.encode()).hexdigest()
 
 def generate_api_key(uid, days=30):
-    raw = f"sk_v101_{uuid.uuid4().hex[:16]}"
+    raw = f"sk_v103_{uuid.uuid4().hex[:16]}"
     with DbConn() as c:
         c.cursor().execute("INSERT INTO api_keys(key_hash, user_id, created_at, expires_at) VALUES(?,?,?,?)",
                            (_hash_key(raw), uid, time.time(), time.time() + days*86400))
@@ -535,8 +542,6 @@ def gen_text(uid, mid, prompt, use_history=True, max_tokens=2048, thinking_level
     msgs.append({"role":"user","content":prompt})
     
     body = {"model": mid, "messages": msgs, "stream": True, "max_tokens": max_tokens}
-    
-    # 🆕 Уровень мышления для Gemini
     if mid.startswith("gemini-4-") and thinking_level:
         body["thinking_level"] = thinking_level
         
@@ -556,10 +561,7 @@ def gen_text(uid, mid, prompt, use_history=True, max_tokens=2048, thinking_level
 
 def gen_image(uid, mid, prompt):
     m = MODELS[mid]; cost = m["price"]
-    if m["provider"] == "polza":
-        url = "https://polza.ai/api/v2/images/generations"
-        headers = {"Authorization": f"Bearer {POLZA_KEY}", "Content-Type": "application/json"}
-    elif m["provider"] == "clodex":
+    if m["provider"] == "clodex":
         url = f"{CLODEX_API_URL}/images/generations"
         headers = {"Authorization": f"Bearer {CLODEX_API_KEY}", "Content-Type": "application/json"}
     else: return None, cost
@@ -576,18 +578,35 @@ def gen_image(uid, mid, prompt):
             log.warning(f"gen_image {mid}: {e}"); time.sleep(2**i)
     return None, cost
 
-def gen_video(uid, mid, prompt):
-    m = VIDEO_MODELS[mid]; duration = m.get("duration", 5); cost = video_cost(mid)
-    url = f"{POLZA_BASE}/videos/generations"
-    headers = {"Authorization": f"Bearer {POLZA_KEY}", "Content-Type": "application/json"}
+def calc_video_price(mid, duration, resolution, aspect):
+    base_price = VIDEO_MODELS[mid]["price"]
+    res_mult = {"720p": 1.0, "1080p": 1.5, "4k": 3.0}.get(resolution, 1.0)
+    aspect_mult = {"16:9": 1.0, "9:16": 1.2, "1:1": 1.1}.get(aspect, 1.0)
+    return int(round(base_price * duration * res_mult * aspect_mult))
+
+def gen_video(uid, mid, prompt, duration=5, resolution="720p", aspect="16:9"):
+    cost = calc_video_price(mid, duration, resolution, aspect)
+    url = f"{CLODEX_API_URL}/videos/generations"
+    headers = {"Authorization": f"Bearer {CLODEX_API_KEY}", "Content-Type": "application/json"}
+    
+    body = {
+        "model": mid,
+        "prompt": prompt,
+        "duration": duration,
+        "resolution": resolution,
+        "aspect_ratio": aspect
+    }
     try:
-        r = requests.post(url, headers=headers, json={"model":mid,"prompt":prompt,"duration":duration}, timeout=HTTP_TIMEOUT_LONG)
+        r = requests.post(url, headers=headers, json=body, timeout=HTTP_TIMEOUT_LONG)
         if r.status_code != 200:
-            log.warning(f"gen_video {mid}: {r.status_code} {r.text[:200]}"); return None, cost
+            log.warning(f"gen_video {mid}: {r.status_code} {r.text[:200]}")
+            return None, cost
         d = r.json()
-        return (d.get("url") or (d.get("data",[{}])[0].get("url") if d.get("data") else None)), cost
+        video_url = d.get("url") or (d.get("data",[{}])[0].get("url") if d.get("data") else None)
+        return video_url, cost
     except Exception as e:
-        log.warning(f"gen_video {mid}: {e}"); return None, cost
+        log.warning(f"gen_video {mid}: {e}")
+        return None, cost
 
 def fulfill_by_payload(uid, payload, amount, provider="", charge_id="", stars=0):
     if payload.startswith("custom_"):
@@ -807,7 +826,7 @@ def start_health(port):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
 # ==========================================================
-# 🎨 МЕНЮ
+# 🎨 МЕНЮ И ЭКРАНЫ
 # ==========================================================
 def payment_choice_kb(payload, rub_price):
     kb = types.InlineKeyboardMarkup(row_width=1)
@@ -830,19 +849,16 @@ def show_main_menu(uid):
 def show_text_menu(uid):
     u = get_user(uid) or {}
     kb = types.InlineKeyboardMarkup(row_width=1)
-    # Топ
     kb.add(types.InlineKeyboardButton("🧠 Carbon — 7₽ (сложные)", callback_data="txt_carbon"))
     kb.add(types.InlineKeyboardButton("🔥 Fable 5.2 — 5₽ (топ)", callback_data="txt_fable"))
     kb.add(types.InlineKeyboardButton("🌟 Astra — 3₽", callback_data="txt_astra"))
     kb.add(types.InlineKeyboardButton("☀️ Sol Ultra — 3₽", callback_data="txt_sol"))
     kb.add(types.InlineKeyboardButton("🎭 Opus 5 — 3₽", callback_data="txt_opus5"))
-    # Дешёвые
     kb.add(types.InlineKeyboardButton("🚀 Hydrogen — 2₽", callback_data="txt_hydrogen"))
     kb.add(types.InlineKeyboardButton("🤖 Grok Fast — 2₽", callback_data="txt_grok"))
     kb.add(types.InlineKeyboardButton("⚡ Luna — 1₽", callback_data="txt_luna"))
     kb.add(types.InlineKeyboardButton("🇨🇳 GLM 5.3 — 1₽", callback_data="txt_glm"))
     kb.add(types.InlineKeyboardButton("🔬 DeepSeek — 1₽", callback_data="txt_deepseek"))
-    # Бесплатно и агенты
     kb.add(types.InlineKeyboardButton("🆓 Nemotron (Бесплатно)", callback_data="txt_free"))
     kb.add(types.InlineKeyboardButton("🤖 3 мнения ИИ", callback_data="menu_agents"))
     kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
@@ -893,6 +909,51 @@ def show_insufficient(uid, need, field="balance_img"):
     kb.add(types.InlineKeyboardButton("💳 Пополнить пакетом", callback_data="menu_topup"))
     kb.add(types.InlineKeyboardButton("⬅️ Назад в меню", callback_data="menu_main"))
     safe_send(uid, f"❌ Не хватает баланса\n\n💰 Нужно: **{need}₽** на {label}\n\n💡 Можешь пополнить ровно на {need}₽ или выбрать пакет:", reply_markup=kb, parse_mode="Markdown")
+
+def show_video_settings(uid, mid):
+    if mid not in VIDEO_MODELS: return
+    u = get_user(uid) or {}
+    state = u.get("state", "")
+    parts = state.split("_")
+    
+    dur = int(parts[3]) if len(parts) > 3 else VIDEO_MODELS[mid]["base_sec"]
+    res = parts[4] if len(parts) > 4 else "720p"
+    asp = parts[5] if len(parts) > 5 else "16:9"
+    
+    new_state = f"vid_setup_{mid}_{dur}_{res}_{asp}"
+    upd(uid, state=new_state, temp_model_id=mid)
+    
+    price = calc_video_price(mid, dur, res, asp)
+    
+    txt = (f"🎬 **{VIDEO_MODELS[mid]['name']}** ❄️\n\n"
+           f"⏱ **Время:** {dur} сек\n"
+           f"📺 **Разрешение:** {res}\n"
+           f"📐 **Формат:** {asp}\n\n"
+           f"💰 **Итого: {price}₽**\n"
+           f"🎟 Баланс: {u.get('balance_vid',0)}₽\n\n"
+           f"Настрой параметры или жми «Подтвердить»:")
+           
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    
+    kb.add(types.InlineKeyboardButton("⏱ Время", callback_data="ignore"))
+    for d in [3, 5, 10]:
+        check = "✅ " if d == dur else ""
+        kb.add(types.InlineKeyboardButton(f"{check}{d}с", callback_data=f"vset_{mid}_d_{d}_{res}_{asp}"))
+        
+    kb.add(types.InlineKeyboardButton("📺 Качество", callback_data="ignore"))
+    for r in ["720p", "1080p", "4k"]:
+        check = "✅ " if r == res else ""
+        kb.add(types.InlineKeyboardButton(f"{check}{r}", callback_data=f"vset_{mid}_r_{dur}_{r}_{asp}"))
+        
+    kb.add(types.InlineKeyboardButton("📐 Формат", callback_data="ignore"))
+    for a in ["16:9", "9:16", "1:1"]:
+        check = "✅ " if a == asp else ""
+        kb.add(types.InlineKeyboardButton(f"{check}{a}", callback_data=f"vset_{mid}_a_{dur}_{res}_{a}"))
+        
+    kb.add(types.InlineKeyboardButton("✅ Подтвердить и написать промпт", callback_data="vid_confirm"))
+    kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_video"))
+    
+    safe_photo(uid, IMG_VIDEO, txt, reply_markup=kb, parse_mode="Markdown")
 
 # ==========================================================
 # 🎯 HANDLERS
@@ -971,8 +1032,11 @@ def register_handlers():
         try: bot.delete_message(c.from_user.id, c.message.message_id)
         except: pass
         show_main_menu(c.from_user.id)
+        
+    @bot.callback_query_handler(func=lambda c: c.data == "ignore")
+    def cb_ignore(c): bot.answer_callback_query(c.id)
 
-    # ---------- ТЕКСТ (ВЫБОР МОДЕЛИ) ----------
+    # ---------- ТЕКСТ ----------
     @bot.callback_query_handler(func=lambda c: c.data in ("txt_hydrogen", "txt_carbon", "txt_luna", "txt_deepseek", "txt_astra", "txt_opus5", "txt_fable", "txt_free", "txt_sol", "txt_grok", "txt_glm"))
     def cb_txt_model(c):
         mapping = {
@@ -992,35 +1056,28 @@ def register_handlers():
         if not mid: return bot.answer_callback_query(c.id, "❌")
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
         
-        # 🆕 Если выбрана модель с уровнями мышления — показываем их
         if mid in ("gemini-4-hydrogen", "gemini-4-carbon"):
             kb = types.InlineKeyboardMarkup(row_width=1)
             kb.add(types.InlineKeyboardButton("🟢 Low (быстро)", callback_data=f"think_{mid}_low"))
             kb.add(types.InlineKeyboardButton("🟡 Medium (баланс)", callback_data=f"think_{mid}_medium"))
             kb.add(types.InlineKeyboardButton("🔴 High (глубоко)", callback_data=f"think_{mid}_high"))
             kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_text"))
-            return safe_photo(c.from_user.id, IMG_TEXT, f"{MODELS[mid]['name']} ❄️\n\nВыбери глубину мышления:\n🟢 **Low** — мгновенный ответ, простые задачи\n🟡 **Medium** — баланс (по умолчанию)\n🔴 **High** — глубокий анализ, сложные задачи", reply_markup=kb, parse_mode="Markdown")
+            return safe_photo(c.from_user.id, IMG_TEXT, f"{MODELS[mid]['name']} ❄️\n\nВыбери глубину мышления:\n🟢 **Low** — мгновенный ответ\n🟡 **Medium** — баланс\n🔴 **High** — глубокий анализ", reply_markup=kb, parse_mode="Markdown")
         
         upd(c.from_user.id, state=f"txt_{mid}")
         price = "Бесплатно" if MODELS[mid]["price"] == 0 else f"{MODELS[mid]['price']}₽"
         safe_photo(c.from_user.id, IMG_TEXT, f"{MODELS[mid]['name']} ❄️\n\n💰 {price}\n{MODEL_HINTS.get(mid,'')}\n🧠 Бесплатных: {max(0, FREE_TEXT_LIMIT - u.get('text_free_used',0))}/{FREE_TEXT_LIMIT}\n\n✍️ Вопрос:", reply_markup=input_kb(), parse_mode="Markdown")
 
-    # 🆕 ОБРАБОТЧИК УРОВНЯ МЫШЛЕНИЯ
     @bot.callback_query_handler(func=lambda c: c.data.startswith("think_"))
     def cb_think_level(c):
         parts = c.data.split("_")
         if len(parts) < 3: return bot.answer_callback_query(c.id, "❌")
         mid, level = parts[1], parts[2]
-        
         if mid not in MODELS: return bot.answer_callback_query(c.id, "❌")
         bot.answer_callback_query(c.id); u = get_user(c.from_user.id) or {}
-        
-        # Сохраняем уровень в state (например: txt_gemini-4-hydrogen_low)
         upd(c.from_user.id, state=f"txt_{mid}_{level}")
-        
         price = f"{MODELS[mid]['price']}₽"
         level_name = {"low": "Low 🟢", "medium": "Medium 🟡", "high": "High 🔴"}.get(level, level)
-        
         safe_photo(c.from_user.id, IMG_TEXT, f"{MODELS[mid]['name']} ({level_name}) ❄️\n\n💰 {price}\n{MODEL_HINTS.get(mid,'')}\n🧠 Бесплатных: {max(0, FREE_TEXT_LIMIT - u.get('text_free_used',0))}/{FREE_TEXT_LIMIT}\n\n✍️ Вопрос:", reply_markup=input_kb(), parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data == "menu_agents")
@@ -1030,7 +1087,7 @@ def register_handlers():
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("➕ Создать агента", callback_data="create_agent"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_text"))
-        safe_photo(c.from_user.id, IMG_TEXT, f"🤖 **3 мнения ИИ** ❄️\n\nПолучишь 3 ответа от разных моделей — выбери лучший.\n\n{price_line}\n🎟 Баланс: {u.get('balance_img',0)}₽", reply_markup=kb, parse_mode="Markdown")
+        safe_photo(c.from_user.id, IMG_TEXT, f"🤖 **3 мнения ИИ** ❄️\n\nПолучишь 3 ответа от разных моделей.\n\n{price_line}\n🎟 Баланс: {u.get('balance_img',0)}₽", reply_markup=kb, parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data == "create_agent")
     def cb_cag(c):
@@ -1070,7 +1127,7 @@ def register_handlers():
         upd(c.from_user.id, state="custom_amount_wait")
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("⬅️ Отмена", callback_data="menu_topup"))
-        safe_send(c.from_user.id, "💎 **Своя сумма** ❄️\n\nВведи сумму от **10₽ до 5000₽**.\n\nПример: `150`\n\n💡 Начислим ровно столько, сколько заплатил (на картинки).", reply_markup=kb, parse_mode="Markdown")
+        safe_send(c.from_user.id, "💎 **Своя сумма** ❄️\n\nВведи сумму от **10₽ до 5000₽**.\n\nПример: `150`\n\n💡 Начислим ровно столько, сколько заплатил.", reply_markup=kb, parse_mode="Markdown")
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith("buy_pack_"))
     def cb_buy_pack(c):
@@ -1213,7 +1270,8 @@ def register_handlers():
     def cb_vid(c):
         bot.answer_callback_query(c.id)
         kb = types.InlineKeyboardMarkup(row_width=1)
-        for mid, m in VIDEO_MODELS.items(): kb.add(types.InlineKeyboardButton(f"{m['name']} — {video_cost(mid)}₽", callback_data=f"vidsel_{mid}"))
+        for mid, m in VIDEO_MODELS.items():
+            kb.add(types.InlineKeyboardButton(f"{m['name']} — {m['price']}₽/сек", callback_data=f"vidsel_{mid}"))
         kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="menu_main"))
         u = get_user(c.from_user.id) or {}
         safe_photo(c.from_user.id, IMG_VIDEO, f"🎬 **Видео** ❄️\n\n🎟 Баланс: {u.get('balance_vid',0)}₽", reply_markup=kb, parse_mode="Markdown")
@@ -1223,9 +1281,27 @@ def register_handlers():
         mid = c.data[7:]
         if mid not in VIDEO_MODELS: return
         bot.answer_callback_query(c.id)
-        upd(c.from_user.id, state="vid_wait", temp_model_id=mid)
-        m = VIDEO_MODELS[mid]; cost = video_cost(mid)
-        safe_photo(c.from_user.id, IMG_VIDEO, f"{m['name']} ❄️\n\n💰 {cost}₽ ({m.get('duration',5)} сек)\n{VIDEO_HINTS.get(mid,'')}\n\n✍️ Опиши видео:", reply_markup=input_kb(), parse_mode="Markdown")
+        show_video_settings(c.from_user.id, mid)
+
+    @bot.callback_query_handler(func=lambda c: c.data.startswith("vset_"))
+    def cb_vset(c):
+        bot.answer_callback_query(c.id)
+        parts = c.data.split("_")
+        if len(parts) < 6: return
+        mid, typ, dur, res, asp = parts[1], parts[2], int(parts[3]), parts[4], parts[5]
+        show_video_settings(c.from_user.id, mid)
+
+    @bot.callback_query_handler(func=lambda c: c.data == "vid_confirm")
+    def cb_vid_confirm(c):
+        u = get_user(c.from_user.id) or {}
+        state = u.get("state", "")
+        if not state.startswith("vid_setup_"):
+            return bot.answer_callback_query(c.id, "❌ Ошибка настроек", show_alert=True)
+        bot.answer_callback_query(c.id)
+        parts = state.split("_")
+        new_state = f"vid_wait_{parts[2]}_{parts[3]}_{parts[4]}_{parts[5]}"
+        upd(c.from_user.id, state=new_state)
+        safe_send(c.from_user.id, f"✍️ Напиши промпт для видео:\n(Время: {parts[3]}с, Качество: {parts[4]}, Формат: {parts[5]})")
 
     # ---------- ЗАДАНИЯ / РЕФЕРАЛЫ / ИСТОРИЯ / API ----------
     @bot.callback_query_handler(func=lambda c: c.data == "menu_tasks")
@@ -1389,7 +1465,6 @@ def register_handlers():
             payload = f"custom_{uid}_{amount}"
             return safe_send(uid, f"💎 **Пополнение на {amount}₽** ❄️\n\nВыбери способ:", reply_markup=payment_choice_kb(payload, amount), parse_mode="Markdown")
 
-        # 🆕 ОБРАБОТКА ТЕКСТА С УЧЕТОМ УРОВНЯ МЫШЛЕНИЯ
         if state.startswith("txt_"):
             parts = state.split("_")
             mid = parts[1]
@@ -1409,7 +1484,6 @@ def register_handlers():
             lvl_text = f" ({thinking_level})" if thinking_level else ""
             status = safe_send(uid, f"❄️ {MODELS[mid]['name']}{lvl_text} думает..." + (" (бесплатно)" if used_free else ""))
             
-            # Передаем thinking_level в gen_text
             ans = gen_text(uid, mid, text, thinking_level=thinking_level)
             
             try: bot.delete_message(uid, status.message_id)
@@ -1467,22 +1541,27 @@ def register_handlers():
                 else: safe_send(uid, "❌ Ошибка. Попробуй ещё раз.")
             return
 
-        if state == "vid_wait":
-            mid = u.get("temp_model_id")
-            if not mid or mid not in VIDEO_MODELS: upd(uid, state=""); return safe_send(uid, "❌ Модель потеряна.")
-            cost = video_cost(mid)
+        if state.startswith("vid_wait_"):
+            parts = state.split("_")
+            if len(parts) < 6: upd(uid, state=""); return safe_send(uid, "❌ Ошибка параметров.")
+            mid = parts[2]; dur = int(parts[3]); res = parts[4]; asp = parts[5]
+            if mid not in VIDEO_MODELS: upd(uid, state=""); return safe_send(uid, "❌ Модель потеряна.")
+            
+            cost = calc_video_price(mid, dur, res, asp)
             if not charge(uid, "balance_vid", cost):
                 upd(uid, state="")
                 return show_insufficient(uid, cost, "balance_vid")
+                
             upd(uid, state="")
-            status = safe_send(uid, f"🎬 Рендерю... ({cost}₽) ❄️")
-            url, _ = gen_video(uid, mid, text)
+            status = safe_send(uid, f"🎬 Рендерю видео ({dur}с, {res})... ({cost}₽) ❄️")
+            url, _ = gen_video(uid, mid, text, duration=dur, resolution=res, aspect=asp)
+            
             try: bot.delete_message(uid, status.message_id)
             except: pass
             if url:
                 with DbConn() as c:
                     c.cursor().execute("INSERT INTO works(user_id,m_type,model_id,prompt,file_id,ts) VALUES(?,?,?,?,?,?)", (uid,"video",mid,text[:500],url,time.time()))
-                send_video_bytes(uid, url, f"✅ {VIDEO_MODELS[mid]['name']} ❄️")
+                send_video_bytes(uid, url, f"✅ {VIDEO_MODELS[mid]['name']} ({dur}с, {res}) ❄️")
                 check_tasks(uid)
             else:
                 if REFUND_ON_ERROR:
@@ -1525,7 +1604,7 @@ def safe_polling():
 
 def main():
     global bot
-    if not TOKEN or not POLZA_KEY: raise SystemExit("BOT_TOKEN / POLZA_KEY не заданы")
+    if not TOKEN or not CLODEX_API_KEY: raise SystemExit("BOT_TOKEN / CLODEX_API_KEY не заданы")
     os.makedirs(DATA_DIR, exist_ok=True)
     Db.init(os.path.join(DATA_DIR, "media_bot.db"), DB_POOL_SIZE)
     init_db()
@@ -1536,7 +1615,7 @@ def main():
     start_health(HEALTH_PORT)
     threading.Thread(target=payment_poller, daemon=True).start()
     threading.Thread(target=safe_polling, daemon=True).start()
-    log.info("❄️ Neuro Studio v101 started ❄️")
+    log.info("❄️ Neuro Studio v103 started ❄️")
     while not SHUTDOWN.is_set(): time.sleep(1)
 
 if __name__ == "__main__":
